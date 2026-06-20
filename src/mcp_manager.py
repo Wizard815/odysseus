@@ -158,13 +158,14 @@ class McpManager:
         args: Optional[List[str]] = None,
         env: Optional[Dict[str, str]] = None,
         url: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> bool:
         """Connect to an MCP server via stdio, SSE, or Streamable HTTP transport."""
         try:
             if transport == "stdio":
                 res = await self._connect_stdio(server_id, name, command, args or [], env or {})
             elif transport == "sse":
-                res = await self._connect_sse(server_id, name, url)
+                res = await self._connect_sse(server_id, name, url, headers=headers)
             elif transport == "http":
                 res = await self._start_http_connect(server_id, name, url)
             else:
@@ -255,7 +256,7 @@ class McpManager:
             }
             return False
 
-    async def _connect_sse(self, server_id: str, name: str, url: str) -> bool:
+    async def _connect_sse(self, server_id: str, name: str, url: str, headers: Optional[Dict[str, str]] = None) -> bool:
         """Connect to an MCP server via SSE transport."""
         try:
             from mcp import ClientSession
@@ -266,7 +267,7 @@ class McpManager:
             registered = False
 
             try:
-                transport = await stack.enter_async_context(sse_client(url))
+                transport = await stack.enter_async_context(sse_client(url, headers=headers or {}))
                 read_stream, write_stream = transport
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
 
@@ -442,6 +443,8 @@ class McpManager:
     async def _connect_with_timeout(self, srv):
         args = json.loads(srv.args) if srv.args else []
         env = json.loads(srv.env) if srv.env else {}
+        srv_headers = getattr(srv, "headers", None)
+        headers = json.loads(srv_headers) if srv_headers else {}
 
         try:
             await asyncio.wait_for(
@@ -453,6 +456,7 @@ class McpManager:
                     args=args,
                     env=env,
                     url=srv.url,
+                    headers=headers or None,
                 ),
                 timeout=20,
             )
