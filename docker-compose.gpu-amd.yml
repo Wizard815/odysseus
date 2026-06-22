@@ -91,13 +91,6 @@ services:
       chromadb:
         condition: service_started
     restart: unless-stopped
-    # AMD ROCm overlay (from docker/gpu.amd.yml).
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    group_add:
-      - video
-      - render
 
   chromadb:
     image: docker.io/chromadb/chroma:latest
