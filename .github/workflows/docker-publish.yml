@@ -130,12 +130,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
             ${{ env.DH_IMAGE }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=${{ steps.ver.outputs.version }},enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=raw,value=mcp-rocm,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=raw,value=${{ steps.ver.outputs.version }}-dev.${{ steps.ver.outputs.short }},enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=latest
       - name: Create manifest list + push tags
         working-directory: /tmp/digests
         run: |
@@ -149,8 +144,7 @@ jobs:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
       - name: Inspect
         run: |
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then ref=latest; else ref=dev; fi
-          docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${ref}"
+          docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:latest"
         env:
           REGISTRY: ${{ env.REGISTRY }}
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
