@@ -12,7 +12,7 @@
 # host's numeric render group id when needed. See docker/gpu.amd.yml for details.
 services:
   odysseus:
-    build: .
+    image: zenth815/odysseus-frontend:latest
     ports:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000"
     volumes:
@@ -97,7 +97,7 @@ services:
       - /dev/dri
     group_add:
       - video
-      - ${RENDER_GID:-render}
+      - render
 
   chromadb:
     image: docker.io/chromadb/chroma:latest
