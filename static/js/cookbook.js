@@ -600,13 +600,28 @@ function _gpuEnvVarName() {
   if (sb === 'rocm') return 'HIP_VISIBLE_DEVICES';
   return ''; // vulkan / metal / mps / apple / cpu / generic / unknown — no env-var pinning
 }
+// GCN-generation AMD GPUs (gfx906/MI50 etc.) aren't in ROCm's officially
+// supported ID table, so the runtime misidentifies them unless
+// HSA_OVERRIDE_GFX_VERSION pins the reported arch. Shares the same
+// target-host-match guard as _gpuEnvVarName() so a stale hwfit scan can't
+// leak this override into a launch on a different (non-GCN) host.
+function _gpuGcnHsaOverride() {
+  const cachedHost = String(_hwfitCache?._scannedHost || '');
+  const currentHost = String(_envState.remoteHost || '');
+  if (cachedHost !== currentHost) return false;
+  if (String(_hwfitCache?.system?.backend || '').toLowerCase() !== 'rocm') return false;
+  return String(_hwfitCache?.system?.gpu_family || '').toLowerCase() === 'gcn';
+}
 function _gpuEnvPrefix(gpuId, isWindows = false) {
   const id = String(gpuId || '').trim();
   if (!id) return '';
   const varName = _gpuEnvVarName();
   if (!varName) return '';
-  if (isWindows) return `$env:${varName}="${id}"; `;
-  return `${varName}=${id} `;
+  const gcnPrefix = _gpuGcnHsaOverride()
+    ? (isWindows ? '$env:HSA_OVERRIDE_GFX_VERSION="9.0.6"; ' : 'HSA_OVERRIDE_GFX_VERSION=9.0.6 ')
+    : '';
+  if (isWindows) return gcnPrefix + `$env:${varName}="${id}"; `;
+  return gcnPrefix + `${varName}=${id} `;
 }
 
 export function _buildEnvPrefix() {
@@ -622,7 +637,10 @@ export function _buildEnvPrefix() {
   let envVars = [];
   if (_envState.hfToken) envVars.push('export HF_TOKEN=' + _shellQuote(_envState.hfToken));
   const _envGpuVar = _gpuEnvVarName();
-  if (_envState.gpus && _envGpuVar) envVars.push(`export ${_envGpuVar}=` + _shellQuote(_envState.gpus));
+  if (_envState.gpus && _envGpuVar) {
+    if (_gpuGcnHsaOverride()) envVars.push('export HSA_OVERRIDE_GFX_VERSION=9.0.6');
+    envVars.push(`export ${_envGpuVar}=` + _shellQuote(_envState.gpus));
+  }
   if (envVars.length) parts.push(envVars.join(' && '));
   if (parts.length === 0) return '';
   return parts.join(' && ') + ' &&';
@@ -639,7 +657,10 @@ function _buildEnvPrefixWindows() {
   }
   if (_envState.hfToken) parts.push('$env:HF_TOKEN=' + _psQuote(_envState.hfToken));
   const _winGpuVar = _gpuEnvVarName();
-  if (_envState.gpus && _winGpuVar) parts.push(`$env:${_winGpuVar}=` + _psQuote(_envState.gpus));
+  if (_envState.gpus && _winGpuVar) {
+    if (_gpuGcnHsaOverride()) parts.push('$env:HSA_OVERRIDE_GFX_VERSION="9.0.6"');
+    parts.push(`$env:${_winGpuVar}=` + _psQuote(_envState.gpus));
+  }
   if (parts.length === 0) return '';
   return parts.join('; ') + ';';
 }
@@ -3612,6 +3633,7 @@ function _sshPrefix(port) {
 
 const shared = {
   _envState,
+  _getHwfitCache: () => _hwfitCache,
   _sshCmd,
   _getPort,
   _sshPrefix,
