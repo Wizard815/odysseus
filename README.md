@@ -95,6 +95,27 @@ Odysseus is a self-hosted workspace with powerful local tools. Keep auth enabled
  </picture>
 </a>
 
+## Credits
+
+This fork (`rocmcuda` branch) builds on the work of several contributors and community projects.
+
+**Upstream project**
+
+- [pewdiepie-archdaemon/odysseus](https://github.com/pewdiepie-archdaemon/odysseus) — the original Odysseus self-hosted AI workspace this fork is based on.
+
+**Merged pull requests from upstream**
+
+- [#4521](https://github.com/pewdiepie-archdaemon/odysseus/pull/4521) — MCP integration
+- [#4250](https://github.com/pewdiepie-archdaemon/odysseus/pull/4250) — Initial ROCm support
+
+**AMD gfx906 / MI50 llama.cpp community**
+
+The Cookbook GPU bootstrap and build flags in this branch draw from the work of these projects:
+
+- [iacopPBK/llama.cpp-gfx906](https://github.com/iacopPBK/llama.cpp-gfx906) — Wave64 kernel implementations for gfx906: DPP warp reductions, Q8 FlashAttention, vectorized loads, fused RoPE, and custom SGEMM/MMF kernels.
+- [arte-fact/llamacpp-gfx-906-turbo](https://github.com/arte-fact/llamacpp-gfx-906-turbo) — combines iacopPBK Wave64 kernels with TurboQuant KV cache compression and 9 HIP-specific correctness fixes for gfx906.
+- [moriyasujapan/llamacpp-gfx-906-turbo-gemma4](https://github.com/moriyasujapan/llamacpp-gfx-906-turbo-gemma4) — extends the above with Gemma 4 support, fused MoE kernels, turbo3 speed improvements, and TP4 ROCm split-mode fix.
+
 ## License
 
 AGPL-3.0-or-later -- see [LICENSE](LICENSE) and [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
