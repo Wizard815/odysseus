@@ -2141,12 +2141,19 @@ def setup_cookbook_routes() -> APIRouter:
             if req.hf_token:
                 runner_lines.append(f"export HF_TOKEN='{_bash_squote(req.hf_token)}'")
             if req.gpus:
-                _is_rocm = (req.gpu_backend or "").lower().startswith("rocm")
-                _is_gcn = (req.gpu_backend or "").lower() == "rocm-gcn"
-                if _is_rocm:
-                    if _is_gcn:
-                        runner_lines.append("export HSA_OVERRIDE_GFX_VERSION=9.0.6")
-                    runner_lines.append(f"export ROCR_VISIBLE_DEVICES='{req.gpus}'")
+                # Route the GPU pin by what the launch command actually targets,
+                # NOT by whether ROCm is installed in the container. On a dual-GPU
+                # host the container always has ROCM_PATH set, so the old check
+                # exported HIP_VISIBLE_DEVICES for *every* launch — sending P4/CUDA
+                # serves to the ROCm binary (wrong GPU, loads ROCm0 not the P4).
+                # The frontend already pins the right vendor inline in the command
+                # (CUDA_VISIBLE_DEVICES for NVIDIA, HIP_VISIBLE_DEVICES for AMD);
+                # mirror that here so the dual-build wrapper routes correctly.
+                _cmd_pin = req.cmd or ''
+                if 'HIP_VISIBLE_DEVICES' in _cmd_pin:
+                    runner_lines.append(f"export HIP_VISIBLE_DEVICES='{req.gpus}'")
+                    if 'HSA_OVERRIDE_GFX_VERSION' in _cmd_pin:
+                        runner_lines.append("export HSA_OVERRIDE_GFX_VERSION='9.0.6'")
                 else:
                     runner_lines.append(f"export CUDA_VISIBLE_DEVICES='{req.gpus}'")
             if req.env_prefix:

@@ -979,20 +979,61 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('      lspci 2>/dev/null | grep -Ei \'VGA|3D|Display\' | grep -Eiq \'AMD|ATI|Radeon\' && return 0')
     runner_lines.append('      return 1')
     runner_lines.append('    }')
-    # Backend preference: native ROCm/HIP > native CUDA > Vulkan > CPU.
-    # Vulkan is a portable fallback that works on AMD when ROCm isn't
-    # installed (e.g. Strix Halo) and on any vendor's discrete GPU, but
-    # it's ~30-40% slower than native HIP/CUDA for LLM inference — only
-    # pick it when no native toolchain is present.
-    runner_lines.append('    if command -v hipconfig &>/dev/null || [ -d /opt/rocm ] || [ -n "$ROCM_PATH" ] || [ -n "$HIP_PATH" ]; then')
+    # Detect which GPU toolchains are available
+    runner_lines.append('    _has_rocm=false')
+    runner_lines.append('    _has_cuda=false')
+    runner_lines.append('    (command -v hipconfig &>/dev/null || [ -d /opt/rocm ] || [ -n "$ROCM_PATH" ] || [ -n "$HIP_PATH" ]) && _has_rocm=true')
+    runner_lines.append('    if ! command -v nvcc &>/dev/null; then')
+    runner_lines.append('      for _sysncdir in /usr/local/cuda /usr/local/cuda-12.4 /usr/local/cuda-12.3 /usr/local/cuda-12.2 /usr/local/cuda-12.1 /usr/local/cuda-12.0 /usr/local/cuda-11.8; do')
+    runner_lines.append('        if [ -x "$_sysncdir/bin/nvcc" ]; then export CUDA_HOME="$_sysncdir"; export PATH="$_sysncdir/bin:$PATH"; break; fi')
+    runner_lines.append('      done')
+    runner_lines.append('    fi')
+    runner_lines.append('    command -v nvcc &>/dev/null && _odysseus_has_nvidia_hw && _has_cuda=true')
+    # cudart helper used in both single-CUDA and dual paths
+    runner_lines.append('    _odysseus_has_cudart() {')
+    runner_lines.append('      ldconfig -p 2>/dev/null | grep -q \'libcudart\\.so\' && return 0')
+    runner_lines.append('      local _cuh="${CUDA_HOME:-/usr/local/cuda}"')
+    runner_lines.append('      ls "$_cuh/lib64/libcudart.so"* &>/dev/null && return 0')
+    runner_lines.append('      ls "$_cuh/lib/libcudart.so"* &>/dev/null && return 0')
+    runner_lines.append('      ls /usr/local/cuda/lib64/libcudart.so* &>/dev/null && return 0')
+    runner_lines.append('      ls /usr/local/cuda/lib/libcudart.so* &>/dev/null && return 0')
+    runner_lines.append('      ls "${_cuh%/cuda_nvcc}/cuda_runtime/lib/libcudart.so"* &>/dev/null && return 0')
+    runner_lines.append('      return 1')
+    runner_lines.append('    }')
+    # ── Dual AMD+NVIDIA: build both binaries + routing wrapper ──────────────
+    runner_lines.append('    if [ "$_has_rocm" = true ] && [ "$_has_cuda" = true ] && _odysseus_has_cudart; then')
+    runner_lines.append('      echo "[odysseus] ROCm + CUDA detected — building dual llama-server binaries (this takes a while)..."')
+    runner_lines.append('      if command -v hipconfig &>/dev/null; then')
+    runner_lines.append('        export HIPCXX="${HIPCXX:-$(hipconfig -l)/clang}"')
+    runner_lines.append('        export HIP_PATH="${HIP_PATH:-$(hipconfig -R)}"')
+    runner_lines.append('      fi')
+    # HIP build → llama-server-hip
+    runner_lines.append('      echo "[odysseus] Building llama-server-hip (ROCm/HIP)..."')
+    runner_lines.append('      _rocm_gfx="$(rocminfo 2>/dev/null | awk \'/Name:.*gfx/{print $2; exit}\')"')
+    runner_lines.append('      _rocm_cmake_extra="-DAMDGPU_TARGETS=${_rocm_gfx:-gfx906}"')
+    runner_lines.append('      case "${_rocm_gfx}" in gfx900|gfx906|gfx908|gfx90a) _rocm_cmake_extra="$_rocm_cmake_extra -DGGML_HIP_NO_FP8=ON" ;; esac')
+    runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" && cmake --build build -j"$NPROC" --target llama-server && cp build/bin/llama-server "$HOME/bin/llama-server-hip"')
+    # CUDA build → llama-server-cuda
+    runner_lines.append('      echo "[odysseus] Building llama-server-cuda (CUDA)..."')
+    runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j"$NPROC" --target llama-server && cp build/bin/llama-server "$HOME/bin/llama-server-cuda"')
+    # Wrapper that routes based on HIP_VISIBLE_DEVICES
+    runner_lines.append('      printf \'#!/bin/sh\\nif [ -n "$HIP_VISIBLE_DEVICES" ]; then\\n  exec $HOME/bin/llama-server-hip "$@"\\nelse\\n  exec $HOME/bin/llama-server-cuda "$@"\\nfi\\n\' > "$HOME/bin/llama-server"')
+    runner_lines.append('      chmod +x "$HOME/bin/llama-server"')
+    runner_lines.append('      echo "[odysseus] Dual llama-server ready — HIP_VISIBLE_DEVICES set → ROCm build, else → CUDA build"')
+    # ── ROCm only ────────────────────────────────────────────────────────────
+    runner_lines.append('    elif [ "$_has_rocm" = true ]; then')
     runner_lines.append('      rm -rf build')
     runner_lines.append('      if command -v hipconfig &>/dev/null; then')
     runner_lines.append('        export HIPCXX="${HIPCXX:-$(hipconfig -l)/clang}"')
     runner_lines.append('        export HIP_PATH="${HIP_PATH:-$(hipconfig -R)}"')
     runner_lines.append('      fi')
     runner_lines.append('      echo "[odysseus] ROCm/HIP detected — building llama-server with HIP support..."')
-    runner_lines.append('      cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
-    runner_lines.append('    elif command -v nvcc &>/dev/null && _odysseus_has_nvidia_hw; then')
+    runner_lines.append('      _rocm_gfx="$(rocminfo 2>/dev/null | awk \'/Name:.*gfx/{print $2; exit}\')"')
+    runner_lines.append('      _rocm_cmake_extra="-DAMDGPU_TARGETS=${_rocm_gfx:-gfx906}"')
+    runner_lines.append('      case "${_rocm_gfx}" in gfx900|gfx906|gfx908|gfx90a) _rocm_cmake_extra="$_rocm_cmake_extra -DGGML_HIP_NO_FP8=ON" ;; esac')
+    runner_lines.append('      cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
+    # ── CUDA only ────────────────────────────────────────────────────────────
+    runner_lines.append('    elif [ "$_has_cuda" = true ]; then')
     runner_lines.append('      rm -rf build')
     # nvcc alone is not sufficient — pip-installed CUDA wheels or incomplete
     # tooling can expose nvcc without shipping libcudart, causing cmake to fail
