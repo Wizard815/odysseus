@@ -1,21 +1,28 @@
+# AMD ROCm overlay — single AMD GPU.
+# Enable by setting COMPOSE_FILE in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker/rocm-overlay.gpu.amd.yml
+#   RENDER_GID=18
+#
+# Requirements:
+#   AMD — ROCm drivers on host (/dev/kfd + /dev/dri).
+#          Find your render GID: getent group render | cut -d: -f3
+#          On Unraid this is usually 18 (same as the video group).
+#
+# For AMD + NVIDIA dual-GPU support use docker/gpu.amd-nvidia.yml instead.
 services:
   odysseus:
-    # Instead of building the stock Dockerfile, target our custom NixOS-AMD layer
     build:
       context: .
       dockerfile: Dockerfile.rocm-overlay
-    
-    # Map the necessary Linux device paths for rendering pass-through
+      args:
+        BASE_IMAGE: ${ODYSSEUS_IMAGE:-zenth815/odysseus-frontend:latest}
+        ROCM_VERSION: ${ROCM_VERSION:-6.1.2}
     devices:
       - /dev/kfd
       - /dev/dri
-    
-    # Bind the runtime execution groups
     group_add:
       - video
       - ${RENDER_GID:-render}
-
-    # Inject execution flags into the container shell environment
     environment:
       - ROCM_PATH=/opt/rocm
       - HIP_PATH=/opt/rocm

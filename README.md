@@ -38,6 +38,30 @@ Open `http://localhost:7000` when the containers are healthy. The first admin pa
 
 Native installs, GPU notes, Windows/macOS instructions, HTTPS, and configuration live in the [setup guide](docs/setup.md).
 
+## GPU Support
+
+Odysseus ships compose overlays for NVIDIA, AMD ROCm, and dual AMD+NVIDIA setups. Set `COMPOSE_FILE` in your `.env` to activate one — no code changes needed.
+
+| Setup | Overlay | Requirement |
+|---|---|---|
+| NVIDIA | `docker/gpu.nvidia.yml` | nvidia-container-toolkit |
+| AMD ROCm | `docker/rocm-overlay.gpu.amd.yml` | ROCm drivers, render GID |
+| AMD + NVIDIA | `docker/gpu.amd-nvidia.yml` | Both of the above |
+
+**AMD / dual-GPU quick start:**
+
+```bash
+# Find your render group GID
+getent group render | cut -d: -f3   # usually 18 on Unraid
+
+# .env
+COMPOSE_FILE=docker-compose.yml:docker/gpu.amd-nvidia.yml
+RENDER_GID=18
+ROCM_VERSION=6.1.2   # 6.2.4 for RDNA2, 6.3.4 for RDNA3
+```
+
+The ROCm overlays build a custom Ubuntu 22.04 + ROCm image on top of the published Odysseus image. On first serve, the Cookbook auto-detects your GPU (gfx906/MI50, RDNA2, RDNA3, NVIDIA) and compiles the right llama.cpp backend — binaries are cached in `APP_DATA_DIR` so rebuilds and container recreates don't wipe them.
+
 ## Features
 
 - **Chat + Agents** — local/API models, tools, MCP, files, shell, skills, and memory.
