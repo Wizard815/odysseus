@@ -10,7 +10,7 @@ name: ci / docker publish
 
 on:
   push:
-    branches: [dev, main]
+    branches: [dev, main, rocmcuda]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -130,7 +130,12 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
             ${{ env.DH_IMAGE }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ steps.ver.outputs.version }},enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=mcp-rocm,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=${{ steps.ver.outputs.version }}-dev.${{ steps.ver.outputs.short }},enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=testing,enable=${{ github.ref == 'refs/heads/rocmcuda' }}
       - name: Create manifest list + push tags
         working-directory: /tmp/digests
         run: |
