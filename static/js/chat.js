@@ -287,7 +287,11 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
   function _setForegroundChatBusy(active) {
     try {
       window.__odysseusChatBusy = !!active;
-      window.__odysseusChatBusyUntil = active ? Date.now() + 120000 : Date.now() + 1200;
+      // Backstop window: consumers treat "busyUntil in the future" as busy
+      // even after the flag clears. 120s froze cookbook/status polling for
+      // two minutes whenever the flag was cleared abnormally — 30s is plenty
+      // to cover the send→stream-start gap it exists for.
+      window.__odysseusChatBusyUntil = active ? Date.now() + 30000 : Date.now() + 1200;
       window.dispatchEvent(new CustomEvent('odysseus:chat-busy-change', { detail: { active: !!active } }));
     } catch (_) {}
   }

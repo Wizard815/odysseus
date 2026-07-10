@@ -2279,6 +2279,26 @@ function _wireTabEvents(body) {
     });
   }
 
+  // Force re-scan of the cached-model list. The list is normally served from
+  // a 6h localStorage cache, so a model downloaded manually (or an mmproj
+  // vision file that landed after the last scan) doesn't show up until the
+  // cache expires — this bypasses the cache and re-scans the folders now.
+  const rescanBtn = document.getElementById('hwfit-cache-rescan');
+  if (rescanBtn) {
+    rescanBtn.addEventListener('click', async () => {
+      if (rescanBtn.disabled) return;
+      rescanBtn.disabled = true;
+      const prevLabel = rescanBtn.textContent;
+      rescanBtn.textContent = 'Scanning…';
+      try {
+        await _fetchCachedModels(true);
+      } finally {
+        rescanBtn.disabled = false;
+        rescanBtn.textContent = prevLabel;
+      }
+    });
+  }
+
   // Select mode — bulk actions
   const selectBtn = document.getElementById('hwfit-cache-select');
   const bulkBar = document.getElementById('serve-bulk-bar');
@@ -3226,6 +3246,7 @@ function _renderRecipes() {
   html += '<div class="memory-toolbar" style="margin-top:8px;">';
   html += '<div class="memory-category-filters">';
   html += '<input type="text" class="memory-search-input" id="serve-search" placeholder="Search cached models\u2026" style="flex:1;min-width:120px;" />';
+  html += '<button class="memory-toolbar-btn" id="hwfit-cache-rescan" title="Re-scan the model folders now \u2014 picks up manually downloaded models and mmproj/vision files without waiting for the cached scan to expire">Rescan</button>';
   html += '<button class="memory-toolbar-btn" id="hwfit-cache-select">Select</button>';
   html += '</div>';
   html += '<div class="doclib-lang-chips" id="serve-tags"></div>';
@@ -3556,7 +3577,13 @@ function _claimSharedStateLeader() {
 function _canRefreshSharedCookbookState() {
   if (!isVisible() || _sharedSyncInFlight) return false;
   if (document.visibilityState !== 'visible') return false;
-  if (_foregroundChatBusy()) return false;
+  if (_foregroundChatBusy()) {
+    // A streaming chat turn used to block this outright, freezing the
+    // Active tab for the whole generation. If the user is actually looking
+    // at the Running tab, keep refreshing — it's two cheap fetches.
+    const activeTab = document.querySelector('#cookbook-modal .cookbook-tab.active')?.dataset?.backend || '';
+    if (activeTab !== 'Running') return false;
+  }
   return _claimSharedStateLeader();
 }
 
