@@ -1444,6 +1444,12 @@ async function _syncFromServerImpl() {
     }
     localStorage.setItem(TASKS_KEY, JSON.stringify(merged.map(_redactTaskForStorage)));
 
+    // A live task that arrived from the server (agent-launched download or
+    // serve) needs the background monitor running, or nothing will ever poll
+    // its status — boot only starts the monitor when localStorage already
+    // held live tasks, and nothing else restarts it mid-session.
+    if (_hasLiveTasks(merged)) _startBackgroundMonitor();
+
     if (state.env) {
       // The active server selection (remoteHost + its env/path/platform) is a
       // per-device, live choice. NEVER let the server's stored copy overwrite
@@ -3859,10 +3865,29 @@ function _claimBackgroundLeader() {
   }
 }
 
+// While a chat turn is streaming we used to skip background polling
+// entirely — which froze the Active tab (and hid agent-launched downloads)
+// for the whole generation. Local models stream for minutes and agent tool
+// loops longer still, so instead of going dark, keep polling at a reduced
+// cadence while busy — and at the normal rate when the user is actually
+// looking at the Running tab. A status fetch is one cheap request (cached
+// 2s server-side, computed off the event loop), so it can't disturb the
+// stream.
+const BUSY_POLL_MIN_INTERVAL_MS = 20000;
+let _lastBusyPollAt = 0;
+
 function _canBackgroundPoll() {
-  if (_foregroundChatBusy()) return false;
   if (document.visibilityState !== 'visible') return false;
-  return _claimBackgroundLeader();
+  if (
+    _foregroundChatBusy()
+    && !_isRunningTabVisible()
+    && Date.now() - _lastBusyPollAt < BUSY_POLL_MIN_INTERVAL_MS
+  ) {
+    return false;
+  }
+  if (!_claimBackgroundLeader()) return false;
+  if (_foregroundChatBusy()) _lastBusyPollAt = Date.now();
+  return true;
 }
 
 // Remote status and endpoint probes can hang while a host is waking up or
@@ -3883,9 +3908,10 @@ function _fetchWithTimeout(input, init = {}, timeoutMs = 15000) {
 let _serveReachabilityInFlight = false;
 let _serveReachabilityLastAt = 0;
 async function _checkServeReachability() {
-  // This reaches out to local model servers. Keep it out of the normal chat
-  // path unless the user is actively looking at the Running tab.
-  if (_foregroundChatBusy()) return;
+  // This reaches out to local model servers, so it only runs while the user
+  // is actively looking at the Running tab. It probes /v1/models (metadata,
+  // not inference), which is safe to hit even while a model is mid-stream —
+  // so unlike the status poll it is NOT gated on the chat-busy flag.
   if (!_isRunningTabVisible()) return;
   const now = Date.now();
   if (_serveReachabilityInFlight || now - _serveReachabilityLastAt < 10000) return;
