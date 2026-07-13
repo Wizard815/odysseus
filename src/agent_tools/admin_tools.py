@@ -357,9 +357,12 @@ async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
         mcp = get_mcp_manager()
         if not mcp:
             return {"response": "No MCP manager", "tools": [], "exit_code": 0}
+        sid = args.get("server_id", "")
         tools = mcp.get_all_tools()
+        if sid:
+            tools = [t for t in tools if t.get("server_id") == sid]
         items = [{"name": t["name"], "server": t["server_name"],
-                  "description": t.get("description", "")[:100]} for t in tools]
+                  "description": t.get("description", "")} for t in tools]
         return {"response": f"{len(items)} MCP tools available", "tools": items, "exit_code": 0}
 
     else:
