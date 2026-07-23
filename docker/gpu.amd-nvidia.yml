@@ -1,0 +1,43 @@
+# AMD ROCm + NVIDIA dual-GPU overlay. Enable by setting COMPOSE_FILE in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker/gpu.amd-nvidia.yml
+#   RENDER_GID=<output of: getent group render | cut -d: -f3>
+#
+# Requirements:
+#   AMD    — ROCm drivers on the host (/dev/kfd + /dev/dri). See docker/gpu.amd.yml.
+#   NVIDIA — NVIDIA Container Toolkit installed on the host. See docker/gpu.nvidia.yml.
+#
+# Builds Dockerfile.rocm-overlay with INSTALL_CUDA=true, so the resulting
+# image has BOTH the ROCm/HIP and CUDA toolchains — that's what lets
+# Cookbook's dual-build wrapper compile llama-server-hip and
+# llama-server-cuda and route between them at launch time via
+# HIP_VISIBLE_DEVICES (see routes/cookbook_helpers.py).
+services:
+  odysseus:
+    build:
+      context: .
+      dockerfile: Dockerfile.rocm-overlay
+      args:
+        BASE_IMAGE: ${ODYSSEUS_IMAGE:-zenth815/odysseus-frontend:latest}
+        ROCM_VERSION: ${ROCM_VERSION:-6.1.2}
+        INSTALL_CUDA: "true"
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - ${RENDER_GID:-render}
+    environment:
+      - ROCM_PATH=/opt/rocm
+      - HIP_PATH=/opt/rocm
+      - HIPCXX=/opt/rocm/llvm/bin/clang++
+      - CXXFLAGS=-Wno-narrowing -Wno-c++11-narrowing
+      - HIPCXXFLAGS=-Wno-narrowing -Wno-c++11-narrowing
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

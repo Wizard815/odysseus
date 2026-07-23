@@ -191,7 +191,7 @@ def setup_hwfit_routes():
         return detect_system(host=host, ssh_port=ssh_port, platform=platform, fresh=fresh)
 
     @router.get("/models")
-    def get_models(use_case: str = "", sort: str = "newest", limit: int = 50, search: str = "", host: str = "", quant: str = "", ctx: str = "", gpu_count: str = "", gpu_group: str = "", ssh_port: str = "", platform: str = "", fresh: bool = False, refresh_catalog: bool = False, manual_mode: str = "", manual_gpu_count: str = "", manual_vram_gb: str = "", manual_ram_gb: str = "", manual_backend: str = "", ignore_detected_gpu: bool = False, ignore_detected_ram: bool = False, fit_only: bool = False):
+    def get_models(use_case: str = "", sort: str = "newest", limit: int = 50, search: str = "", host: str = "", quant: str = "", ctx: str = "", gpu_count: str = "", gpu_group: str = "", ssh_port: str = "", platform: str = "", fresh: bool = False, refresh_catalog: bool = False, manual_mode: str = "", manual_gpu_count: str = "", manual_vram_gb: str = "", manual_ram_gb: str = "", manual_backend: str = "", ignore_detected_gpu: bool = False, ignore_detected_ram: bool = False, fit_only: bool = False, active_backend: str = ""):
         """Rank LLM models against detected hardware and return scored results.
         gpu_count: override GPU count (0 = CPU only, 1-N = simulate N GPUs of the
             active group). gpu_group: index into system.gpu_groups (the homogeneous
@@ -230,6 +230,36 @@ def setup_hwfit_routes():
             system["total_ram_gb"] = 0
 
         system = _apply_manual_hardware(system, manual_mode, manual_gpu_count, manual_vram_gb, manual_ram_gb, manual_backend)
+
+        # Dual-vendor host: swap primary GPU data so the ranker uses the backend the
+        # user selected via the CUDA/ROCm toggle. Skipped when manual hardware is active
+        # (the user has already chosen an explicit override via EDIT).
+        if (active_backend
+                and not system.get("manual_hardware")
+                and active_backend in system.get("backends", [])
+                and active_backend != system.get("backend", "")
+                and "alt_gpu" in system):
+            alt = system["alt_gpu"]
+            old_primary = {
+                "gpu_name": system.get("gpu_name"),
+                "gpu_vram_gb": system.get("gpu_vram_gb"),
+                "gpu_count": system.get("gpu_count", 0),
+                "gpus": system.get("gpus", []),
+                "gpu_groups": system.get("gpu_groups", []),
+                "gpu_arch": system.get("gpu_arch", ""),
+                "gpu_family": system.get("gpu_family", ""),
+                "backend": system.get("backend", ""),
+            }
+            system["gpu_name"] = alt["gpu_name"]
+            system["gpu_vram_gb"] = alt["gpu_vram_gb"]
+            system["gpu_count"] = alt["gpu_count"]
+            system["gpus"] = alt.get("gpus", [])
+            system["gpu_groups"] = alt.get("gpu_groups", [])
+            system["gpu_arch"] = alt.get("gpu_arch", "")
+            system["gpu_family"] = alt.get("gpu_family", "")
+            system["backend"] = active_backend
+            system["alt_gpu"] = old_primary  # swap so slider can still re-render
+            system["has_gpu"] = True
 
         # Keep the raw detection around so the UI can still show the box's full
         # GPU complement even while we rank against one homogeneous pool.

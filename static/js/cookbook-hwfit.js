@@ -145,6 +145,9 @@ let _dismissedHwChips = new Set();
 let _removedHwChips = new Set();
 
 export let _gpuToggleTotal = 0; // real GPU count from first scan, never overridden
+// Active backend override for dual-vendor hosts (NVIDIA + AMD). '' = use detected.
+// 'cuda' or 'rocm' when the user has clicked the CUDA/ROCm toggle in the toolbar.
+export let _activeBackend = localStorage.getItem('hwfit-active-backend') || '';
 
 function _firstGgufSource(model) {
   const sources = Array.isArray(model?.gguf_sources) ? model.gguf_sources : [];
@@ -400,6 +403,55 @@ function _manualHwParams() {
   };
 }
 
+// Renders a CUDA / ROCm toggle in the toolbar when both vendors are present.
+// Clicking a button updates _activeBackend and re-fetches models ranked against
+// that vendor's VRAM (e.g. an NVIDIA card's 8 GB CUDA vs an AMD card's 32 GB ROCm).
+function _renderBackendToggle(system) {
+  const backends = system?.backends;
+  // Render into every backend-toggle container on the page (Scan + Launch tabs).
+  const containers = [
+    document.getElementById('hwfit-backend-toggle'),
+    document.getElementById('hwfit-backend-toggle-launch'),
+  ].filter(Boolean);
+  if (!containers.length) return;
+
+  // Manual hardware override wins over the toggle: the API skips the
+  // backend swap while manual_hardware is set (see hwfit_routes get_models),
+  // so rendering the pills would give the user dead controls. Clear the
+  // Manual chip (×) to get live backend switching back.
+  const manualActive = !!(system?.manual_hardware || _manualHwState());
+  const hasBoth = Array.isArray(backends) && backends.includes('cuda') && backends.includes('rocm');
+  if (!hasBoth || manualActive) {
+    containers.forEach(c => { c.style.display = 'none'; c.innerHTML = ''; });
+    return;
+  }
+  // system.backend reflects the active side — swapped by the API when
+  // active_backend is sent, so it's always the current live selection.
+  const activeBe = (system?.backend || 'cuda').toLowerCase();
+  const btnStyle = (active) =>
+    `flex-shrink:0;padding:2px 8px;font-size:11px;cursor:pointer;border-radius:4px;` +
+    (active ? 'opacity:1;font-weight:bold;' : 'opacity:0.45;');
+  const html =
+    `<div style="display:flex;align-items:center;gap:2px;flex-shrink:0;margin-right:2px;">` +
+    `<button type="button" class="hwfit-gpu-btn" data-be="cuda" style="${btnStyle(activeBe === 'cuda')}">CUDA</button>` +
+    `<button type="button" class="hwfit-gpu-btn" data-be="rocm" style="${btnStyle(activeBe === 'rocm')}">ROCm</button>` +
+    `</div>`;
+  containers.forEach(c => {
+    c.style.display = '';
+    c.innerHTML = html;
+    c.querySelectorAll('[data-be]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const be = btn.dataset.be;
+        if (be === activeBe) return;
+        _activeBackend = be;
+        localStorage.setItem('hwfit-active-backend', be);
+        _resetGpuToggleState();
+        _hwfitFetch(false); // re-fetches and re-renders both toggles via this function
+      });
+    });
+  });
+}
+
 function _manualNumber(value, fallback) {
   const raw = String(value || '').replace(',', '.');
   const match = raw.match(/-?\d+(?:\.\d+)?/);
@@ -468,6 +520,11 @@ function _scanSig() {
   return JSON.stringify({
     h: _envState.remoteHost || '',
     hk: _currentServerValue(),
+    // Active CUDA/ROCm backend must be part of the cache key: the API swaps
+    // primary/alt GPU data per backend, so cuda- and rocm-ranked results are
+    // different lists. Without this, a backend-pill click hits the other
+    // backend's cached slot and the early-return skips the re-rank entirely.
+    b: _activeBackend || '',
     u: document.getElementById('hwfit-usecase')?.value || '',
     s: document.getElementById('hwfit-search')?.value?.trim() || '',
     q: document.getElementById('hwfit-quant')?.value || '',
@@ -692,6 +749,7 @@ export async function _hwfitFetch(fresh = false, opts = {}) {
     // host, so a hit here is always for the current remoteHost).
     _hwfitCache = { ..._cached, _scannedHost: remoteHost || '' };
     _hwfitRenderHw(hw, _cached.system);
+    _renderBackendToggle(_cached.system);
     if (!remoteHost && _cached.system && _cached.system.platform) {
       _envState.platform = _cached.system.platform;
     }
@@ -815,6 +873,7 @@ export async function _hwfitFetch(fresh = false, opts = {}) {
     }
     if (gpuCountOverride !== '') params.set('gpu_count', gpuCountOverride);
     if (gpuGroupOverride !== '') params.set('gpu_group', gpuGroupOverride);
+    if (_activeBackend) params.set('active_backend', _activeBackend);
     if (_dismissedHwChips.has('gpu') || _dismissedHwChips.has('vram')) params.set('ignore_detected_gpu', 'true');
     if (_dismissedHwChips.has('ram')) params.set('ignore_detected_ram', 'true');
     const manualParams = _manualHwParams();
@@ -914,6 +973,7 @@ export async function _hwfitFetch(fresh = false, opts = {}) {
     // to a different target without re-running hwfit.
     _hwfitCache = { ...data, _scannedHost: remoteHost || '' };
     _hwfitRenderHw(hw, data.system);
+    _renderBackendToggle(data.system);
     // Propagate local platform from hardware probe so _isWindows(task) works
     // for local tasks (menu items, shell commands, etc.).
     if (!remoteHost && data.system && data.system.platform) {

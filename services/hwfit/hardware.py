@@ -859,7 +859,10 @@ def detect_system(host="", ssh_port="", platform="", fresh=False):
     cpu_name = _get_cpu_name()
     cpu_arch = _get_cpu_arch()
 
-    gpu_info = _detect_apple_silicon() or _detect_nvidia() or _detect_amd()
+    _apple_info = _detect_apple_silicon()
+    _nvidia_info = None if _apple_info else _detect_nvidia()
+    _amd_info = None if _apple_info else _detect_amd()
+    gpu_info = _apple_info or _nvidia_info or _amd_info
 
     if gpu_info:
         result = {
@@ -881,6 +884,28 @@ def detect_system(host="", ssh_port="", platform="", fresh=False):
             # flag through so callers can tell unified from discrete VRAM.
             "unified_memory": gpu_info.get("unified_memory", False),
         }
+        # Carry through AMD architecture fields so env-var logic knows GCN needs
+        # HSA_OVERRIDE_GFX_VERSION (gfx906 MI50/Radeon VII).
+        if gpu_info.get("gpu_arch"):
+            result["gpu_arch"] = gpu_info["gpu_arch"]
+        if gpu_info.get("gpu_family"):
+            result["gpu_family"] = gpu_info["gpu_family"]
+        # Dual-vendor host: surface both backends so the UI can show a CUDA/ROCm toggle.
+        # Primary is always NVIDIA (more broadly supported); AMD is the alt.
+        if _nvidia_info and _amd_info:
+            result["backends"] = ["cuda", "rocm"]
+            result["alt_gpu"] = {
+                "gpu_name": _amd_info["gpu_name"],
+                "gpu_vram_gb": _amd_info["gpu_vram_gb"],
+                "gpu_count": _amd_info["gpu_count"],
+                "gpus": _amd_info.get("gpus", []),
+                "gpu_groups": _amd_info.get("gpu_groups", []),
+                "gpu_arch": _amd_info.get("gpu_arch", ""),
+                "gpu_family": _amd_info.get("gpu_family", ""),
+                "backend": "rocm",
+            }
+        else:
+            result["backends"] = [gpu_info["backend"]] if gpu_info.get("backend") else []
     else:
         backend = "cpu_arm" if cpu_arch == "arm64" else "cpu_x86"
         result = {
