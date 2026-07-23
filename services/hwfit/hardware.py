@@ -263,7 +263,15 @@ def _detect_amd():
                 is_apu = True
             if vram_bytes <= 0:
                 continue
-            name = _read(f"{base}/product_name") or f"AMD GPU ({entry})"
+            # Fallback name must NOT embed the cardN entry: _group_gpus pools
+            # identical GPUs by name, and per-card names split two identical
+            # MI50s into two 1-GPU pools (capping ranking at one card's VRAM).
+            # The PCI device id (e.g. 0x66a1) is identical for identical cards
+            # and differs across models, so it groups correctly either way.
+            name = _read(f"{base}/product_name")
+            if not name:
+                dev_id = (_read(f"{base}/device") or "").strip()
+                name = f"AMD GPU {dev_id}" if dev_id else "AMD GPU"
             cards.append({"index": _cidx, "name": name, "vram_gb": vram_bytes / (1024**3)})
 
         if not cards:

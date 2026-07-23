@@ -149,7 +149,9 @@ jobs:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
       - name: Inspect
         run: |
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then ref=latest; elif [ "$GITHUB_REF" = "refs/heads/rocmcuda" ]; then ref=testing; else ref=dev; fi
+          # dev pushes tag :latest (the live compose overlays pull it as their
+          # BASE_IMAGE), so inspect :latest for dev too — :testing only for rocmcuda.
+          if [ "$GITHUB_REF" = "refs/heads/rocmcuda" ]; then ref=testing; else ref=latest; fi
           docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${ref}"
         env:
           REGISTRY: ${{ env.REGISTRY }}

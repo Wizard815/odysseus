@@ -557,6 +557,7 @@ function _readNearestScanCache(sig) {
       if (!parsed) continue;
       if ((parsed.h || '') !== (wanted.h || '')) continue;
       if ((parsed.hk || '') !== (wanted.hk || '')) continue;
+      if ((parsed.b || '') !== (wanted.b || '')) continue;
       if (JSON.stringify(parsed.m || {}) !== JSON.stringify(wanted.m || {})) continue;
       if (JSON.stringify(parsed.d || []) !== JSON.stringify(wanted.d || [])) continue;
       if (!best || (entry.ts || 0) > (best.ts || 0)) best = entry;
@@ -750,6 +751,15 @@ export async function _hwfitFetch(fresh = false, opts = {}) {
     _hwfitCache = { ..._cached, _scannedHost: remoteHost || '' };
     _hwfitRenderHw(hw, _cached.system);
     _renderBackendToggle(_cached.system);
+    // Same for the GPU count/pool toggles: they're normally rebuilt only on
+    // the network path, so after _resetGpuToggleState() (e.g. a CUDA/ROCm
+    // swap that hits the other backend's warm cache slot) the dropdown kept
+    // showing the previous backend's GPU pools.
+    const _tcCached = document.getElementById('hwfit-gpu-toggles');
+    if (_tcCached && !_tcCached._originalSystem && _tcCached._activeCount === undefined) {
+      _tcCached._originalSystem = { ..._cached.system };
+      _renderGpuToggles(_tcCached._originalSystem);
+    }
     if (!remoteHost && _cached.system && _cached.system.platform) {
       _envState.platform = _cached.system.platform;
     }
