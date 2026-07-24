@@ -2202,7 +2202,7 @@ def setup_cookbook_routes() -> APIRouter:
                 # attempt) poisons build/CMakeCache.txt, so a plain `cmake -B build`
                 # would reuse the bad settings and fail again. CMAKE_BUILD_TYPE is
                 # explicit so the binary is optimized (Metal auto-enables on macOS).
-                runner_lines.append('    cd ~/llama.cpp && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release \\')
+                runner_lines.append('    cd ~/llama.cpp && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF \\')
                 runner_lines.append('      && cmake --build build -j"$NPROC" --target llama-server \\')
                 runner_lines.append('      && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
                 runner_lines.append('  else')

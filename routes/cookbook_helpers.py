@@ -1049,12 +1049,12 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('      _rocm_gfx="$(rocminfo 2>/dev/null | awk \'/Name:.*gfx/{print $2; exit}\')"')
     runner_lines.append('      _rocm_cmake_extra="-DAMDGPU_TARGETS=${_rocm_gfx:-gfx906}"')
     runner_lines.append('      case "${_rocm_gfx}" in gfx900|gfx906|gfx908|gfx90a) _rocm_cmake_extra="$_rocm_cmake_extra -DGGML_HIP_NO_FP8=ON" ;; esac')
-    runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" && cmake --build build -j"$NPROC" --target llama-server && cp build/bin/llama-server "$HOME/bin/llama-server-hip"')
+    runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF && cmake --build build -j"$NPROC" --target llama-server && rm -f "$HOME/bin/llama-server-hip" && cp build/bin/llama-server "$HOME/bin/llama-server-hip"')
     # CUDA build → llama-server-cuda (always mainline — cd back in case the
     # HIP build above ran in the separate ROCm-fork checkout).
     runner_lines.append('      echo "[odysseus] Building llama-server-cuda (CUDA)..."')
     runner_lines.append('      cd "$HOME/llama.cpp"')
-    runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j"$NPROC" --target llama-server && cp build/bin/llama-server "$HOME/bin/llama-server-cuda"')
+    runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF && cmake --build build -j"$NPROC" --target llama-server && rm -f "$HOME/bin/llama-server-cuda" && cp build/bin/llama-server "$HOME/bin/llama-server-cuda"')
     # Wrapper that routes based on HIP_VISIBLE_DEVICES. Bake in the absolute
     # bin dir NOW (build time, when $HOME is known-correct) rather than
     # leaving $HOME to be re-evaluated when the wrapper actually runs — the
@@ -1091,7 +1091,7 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('      _rocm_gfx="$(rocminfo 2>/dev/null | awk \'/Name:.*gfx/{print $2; exit}\')"')
     runner_lines.append('      _rocm_cmake_extra="-DAMDGPU_TARGETS=${_rocm_gfx:-gfx906}"')
     runner_lines.append('      case "${_rocm_gfx}" in gfx900|gfx906|gfx908|gfx90a) _rocm_cmake_extra="$_rocm_cmake_extra -DGGML_HIP_NO_FP8=ON" ;; esac')
-    runner_lines.append(f'      cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" && cmake --build build -j"$NPROC" --target llama-server && ln -sf "{_rocm_src_dir}/build/bin/llama-server" ~/bin/llama-server')
+    runner_lines.append(f'      cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF && cmake --build build -j"$NPROC" --target llama-server && ln -sf "{_rocm_src_dir}/build/bin/llama-server" ~/bin/llama-server')
     # ── CUDA only ────────────────────────────────────────────────────────────
     runner_lines.append('    elif [ "$_has_cuda" = true ]; then')
     runner_lines.append('      rm -rf build')
@@ -1111,23 +1111,23 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('      }')
     runner_lines.append('      if _odysseus_has_cudart; then')
     runner_lines.append('        echo "[odysseus] CUDA nvcc + cudart found — building llama-server with CUDA (GPU) support..."')
-    runner_lines.append('        cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
+    runner_lines.append('        cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
     runner_lines.append('      else')
     runner_lines.append('        echo "[odysseus] WARNING: nvcc found but CUDA runtime (libcudart.so) is not visible — building llama-server for CPU only."')
     runner_lines.append('        echo "[odysseus]   GPU inference will not be available for this llama.cpp build."')
     runner_lines.append('        echo "[odysseus]   Ensure libcudart is installed (e.g. cuda-runtime package) and visible via ldconfig or CUDA_HOME."')
-    runner_lines.append('        cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
+    runner_lines.append('        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
     runner_lines.append('      fi')
     runner_lines.append('    elif _odysseus_has_vulkan_device && _odysseus_has_vulkan; then')
     runner_lines.append('      echo "[odysseus] Vulkan-capable GPU detected (no ROCm/CUDA toolchain installed) — building llama-server with Vulkan support..."')
     runner_lines.append('      rm -rf build-vulkan')
-    runner_lines.append('      cmake -B build-vulkan -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON && cmake --build build-vulkan -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build-vulkan/bin/llama-server ~/bin/llama-server')
+    runner_lines.append('      cmake -B build-vulkan -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF && cmake --build build-vulkan -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build-vulkan/bin/llama-server ~/bin/llama-server')
     runner_lines.append('    else')
     runner_lines.append('      echo "[odysseus] WARNING: no HIP/CUDA/Vulkan toolchain found — building llama-server for CPU only."')
     runner_lines.append('      echo "[odysseus]   GPU inference will not be available for this llama.cpp build."')
     runner_lines.append('      echo "[odysseus]   Install Vulkan (libvulkan-dev) / ROCm for AMD GPUs or CUDA tooling for NVIDIA, then re-launch this serve task."')
     runner_lines.append('      rm -rf build')
-    runner_lines.append('      cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
+    runner_lines.append('      cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
     runner_lines.append('    fi')
     runner_lines.append('  fi  # end _odysseus_have_prebuilt guard')
 
