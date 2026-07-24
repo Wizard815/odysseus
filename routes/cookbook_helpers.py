@@ -844,6 +844,23 @@ def _append_serve_exit_code_lines(
         runner_lines.append('exit "$ODYSSEUS_CMD_EXIT"')
 
 
+_MAINLINE_LLAMA_CPP_REPO = "https://github.com/ggml-org/llama.cpp"
+
+
+def _rocm_llama_cpp_repo() -> str:
+    """Custom llama.cpp source repo to build for ROCm/HIP, from LLAMACPP_ROCM_REPO.
+
+    Empty string means "no override" — build mainline like every other backend.
+    Set via .env to point the HIP build at a gfx906-tuned fork (e.g.
+    iacopPBK/llama.cpp-gfx906) without touching the CUDA/CPU/Vulkan builds, which
+    always use mainline regardless of this var.
+    """
+    repo = (os.environ.get("LLAMACPP_ROCM_REPO") or "").strip().rstrip("/")
+    if not repo or repo.lower() == _MAINLINE_LLAMA_CPP_REPO.lower():
+        return ""
+    return repo
+
+
 def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     """Append Linux llama.cpp build lines that prefer ROCm/HIP when available.
 
@@ -851,6 +868,24 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     to hard-wire CUDA on Linux. That made ROCm hosts attempt a CUDA configure and
     fail with "CUDA Toolkit not found" instead of building with HIP.
     """
+    _rocm_repo = _rocm_llama_cpp_repo()
+    _rocm_src_dir = "$HOME/llama.cpp-rocm" if _rocm_repo else "$HOME/llama.cpp"
+
+    def _append_rocm_repo_clone_lines(indent: str) -> None:
+        # Separate checkout so a custom ROCm/HIP fork never contaminates the
+        # mainline CUDA/CPU/Vulkan build. Only cloned when a ROCm build is
+        # actually about to happen — not on hosts with no AMD GPU/toolchain.
+        if not _rocm_repo:
+            return
+        runner_lines.append(f'{indent}if [ ! -d "{_rocm_src_dir}/.git" ]; then')
+        runner_lines.append(
+            f'{indent}  echo "[odysseus] Cloning ROCm llama.cpp fork: {shlex.quote(_rocm_repo)}"'
+        )
+        runner_lines.append(
+            f'{indent}  git clone --depth 1 {shlex.quote(_rocm_repo)} "{_rocm_src_dir}" '
+            f'|| echo "[odysseus] WARNING: ROCm fork clone failed — falling back to mainline for the HIP build."'
+        )
+        runner_lines.append(f'{indent}fi')
     # Try a prebuilt binary from llama.cpp's GitHub releases FIRST — no
     # cmake/build-essential/git/CUDA-headers needed at all. The from-source
     # build below stays as a fallback (custom flags, esoteric arch, no
@@ -1009,12 +1044,16 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('      fi')
     # HIP build → llama-server-hip
     runner_lines.append('      echo "[odysseus] Building llama-server-hip (ROCm/HIP)..."')
+    _append_rocm_repo_clone_lines('      ')
+    runner_lines.append(f'      cd "{_rocm_src_dir}"')
     runner_lines.append('      _rocm_gfx="$(rocminfo 2>/dev/null | awk \'/Name:.*gfx/{print $2; exit}\')"')
     runner_lines.append('      _rocm_cmake_extra="-DAMDGPU_TARGETS=${_rocm_gfx:-gfx906}"')
     runner_lines.append('      case "${_rocm_gfx}" in gfx900|gfx906|gfx908|gfx90a) _rocm_cmake_extra="$_rocm_cmake_extra -DGGML_HIP_NO_FP8=ON" ;; esac')
     runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" && cmake --build build -j"$NPROC" --target llama-server && cp build/bin/llama-server "$HOME/bin/llama-server-hip"')
-    # CUDA build → llama-server-cuda
+    # CUDA build → llama-server-cuda (always mainline — cd back in case the
+    # HIP build above ran in the separate ROCm-fork checkout).
     runner_lines.append('      echo "[odysseus] Building llama-server-cuda (CUDA)..."')
+    runner_lines.append('      cd "$HOME/llama.cpp"')
     runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j"$NPROC" --target llama-server && cp build/bin/llama-server "$HOME/bin/llama-server-cuda"')
     # Wrapper that routes based on HIP_VISIBLE_DEVICES
     runner_lines.append('      printf \'#!/bin/sh\\nif [ -n "$HIP_VISIBLE_DEVICES" ]; then\\n  exec $HOME/bin/llama-server-hip "$@"\\nelse\\n  exec $HOME/bin/llama-server-cuda "$@"\\nfi\\n\' > "$HOME/bin/llama-server"')
@@ -1028,10 +1067,12 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('        export HIP_PATH="${HIP_PATH:-$(hipconfig -R)}"')
     runner_lines.append('      fi')
     runner_lines.append('      echo "[odysseus] ROCm/HIP detected — building llama-server with HIP support..."')
+    _append_rocm_repo_clone_lines('      ')
+    runner_lines.append(f'      cd "{_rocm_src_dir}"')
     runner_lines.append('      _rocm_gfx="$(rocminfo 2>/dev/null | awk \'/Name:.*gfx/{print $2; exit}\')"')
     runner_lines.append('      _rocm_cmake_extra="-DAMDGPU_TARGETS=${_rocm_gfx:-gfx906}"')
     runner_lines.append('      case "${_rocm_gfx}" in gfx900|gfx906|gfx908|gfx90a) _rocm_cmake_extra="$_rocm_cmake_extra -DGGML_HIP_NO_FP8=ON" ;; esac')
-    runner_lines.append('      cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
+    runner_lines.append(f'      cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON $_rocm_cmake_extra -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" -DCMAKE_HIP_FLAGS="-Wno-narrowing -Wno-c++11-narrowing" && cmake --build build -j"$NPROC" --target llama-server && ln -sf "{_rocm_src_dir}/build/bin/llama-server" ~/bin/llama-server')
     # ── CUDA only ────────────────────────────────────────────────────────────
     runner_lines.append('    elif [ "$_has_cuda" = true ]; then')
     runner_lines.append('      rm -rf build')
@@ -1090,15 +1131,32 @@ def _llama_cpp_rebuild_cmd(update_source: bool = False) -> str:
             'git -C "$HOME/llama.cpp" pull --ff-only --depth 1 || '
             'echo "[odysseus] WARNING: llama.cpp source update failed; clearing cached build anyway."; '
             'elif command -v git >/dev/null 2>&1; then '
-            'git clone --depth 1 https://github.com/ggml-org/llama.cpp "$HOME/llama.cpp" || '
+            f'git clone --depth 1 {_MAINLINE_LLAMA_CPP_REPO} "$HOME/llama.cpp" || '
             'echo "[odysseus] WARNING: llama.cpp clone failed; clearing cached build anyway."; '
             'fi && '
         )
+    _rocm_repo = _rocm_llama_cpp_repo()
+    _rocm_clear_cmd = 'rm -rf "$HOME/llama.cpp/build" "$HOME/llama.cpp/build-vulkan"'
+    if _rocm_repo:
+        # LLAMACPP_ROCM_REPO is set — keep the separate fork checkout in sync
+        # too so the rebuild button picks up fork updates, not just mainline.
+        _rocm_update_cmd = ''
+        if update_source:
+            _rocm_update_cmd = (
+                'if [ -d "$HOME/llama.cpp-rocm/.git" ]; then '
+                'git -C "$HOME/llama.cpp-rocm" pull --ff-only --depth 1 || '
+                'echo "[odysseus] WARNING: ROCm fork update failed; clearing cached build anyway."; '
+                'elif command -v git >/dev/null 2>&1; then '
+                f'git clone --depth 1 {shlex.quote(_rocm_repo)} "$HOME/llama.cpp-rocm" || '
+                'echo "[odysseus] WARNING: ROCm fork clone failed; clearing cached build anyway."; '
+                'fi && '
+            )
+        _rocm_clear_cmd = f'{_rocm_update_cmd}rm -rf "$HOME/llama.cpp-rocm/build" "$HOME/llama.cpp/build" "$HOME/llama.cpp/build-vulkan"'
     return (
         'mkdir -p "$HOME/bin" && '
         f'{update_cmd}'
         'rm -f "$HOME/bin/llama-server" && '
-        'rm -rf "$HOME/llama.cpp/build" "$HOME/llama.cpp/build-vulkan" && '
+        f'{_rocm_clear_cmd} && '
         'echo "[odysseus] Cleared the cached llama.cpp build. '
         'Re-launch the serve task to rebuild llama-server from source '
         '(Vulkan, HIP, or CUDA will be used if a matching toolchain is now available)."'

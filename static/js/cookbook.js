@@ -9,7 +9,7 @@ import { providerLogo } from './providers.js';
 import { makeWindowDraggable } from './windowDrag.js';
 import { _diagnose, _showDiagnosis, _clearDiagnosis, _runQuickCmd, ERROR_PATTERNS } from './cookbook-diagnosis.js';
 import { RECIPE_BACKENDS, recipesForBackend, pickRecipe, recipeCommands, RECIPE_DEFAULT_VARIANT } from './cookbook-deps-recipes.js';
-import { _hwfitCache, _hwfitDebounce, _hwfitFetch, _hwfitInit, _hwfitRenderList, _hwfitRenderHw, _renderGpuToggles, _expandModelRow, _fitColors, _hwfitColumns, _cachedModelIds, _gpuToggleTotal, _resetGpuToggleState } from './cookbook-hwfit.js';
+import { _hwfitCache, _activeBackend, _hwfitDebounce, _hwfitFetch, _hwfitInit, _hwfitRenderList, _hwfitRenderHw, _renderGpuToggles, _expandModelRow, _fitColors, _hwfitColumns, _cachedModelIds, _gpuToggleTotal, _resetGpuToggleState } from './cookbook-hwfit.js';
 
 // Sub-modules
 import {
@@ -500,7 +500,7 @@ export function _detectBackend(model) {
     return { backend: 'ollama', label: 'Ollama' };
   }
   const q = (model.quant || '').toUpperCase();
-  const sysBackend = String(_hwfitCache?.system?.backend || '').toLowerCase();
+  const sysBackend = String(_activeBackend || _hwfitCache?.system?.backend || '').toLowerCase();
   const isRocm = sysBackend === 'rocm';
   const isAppleSilicon = ['metal', 'mps', 'apple'].includes(sysBackend);
   const _nm = `${model.repo_id || ''} ${model.path || ''} ${model.name || ''}`.toLowerCase();
@@ -595,7 +595,7 @@ function _gpuEnvVarName() {
   const cachedHost = String(_hwfitCache?._scannedHost || '');
   const currentHost = String(_envState.remoteHost || '');
   if (cachedHost !== currentHost) return '';
-  const sb = String(_hwfitCache?.system?.backend || '').toLowerCase();
+  const sb = String(_activeBackend || _hwfitCache?.system?.backend || '').toLowerCase();
   if (sb === 'cuda') return 'CUDA_VISIBLE_DEVICES';
   if (sb === 'rocm') return 'HIP_VISIBLE_DEVICES';
   return ''; // vulkan / metal / mps / apple / cpu / generic / unknown — no env-var pinning
@@ -609,7 +609,7 @@ function _gpuGcnHsaOverride() {
   const cachedHost = String(_hwfitCache?._scannedHost || '');
   const currentHost = String(_envState.remoteHost || '');
   if (cachedHost !== currentHost) return false;
-  if (String(_hwfitCache?.system?.backend || '').toLowerCase() !== 'rocm') return false;
+  if (String(_activeBackend || _hwfitCache?.system?.backend || '').toLowerCase() !== 'rocm') return false;
   return String(_hwfitCache?.system?.gpu_family || '').toLowerCase() === 'gcn';
 }
 function _gpuEnvPrefix(gpuId, isWindows = false) {
@@ -836,7 +836,7 @@ export function _buildServeCmd(f, modelName, backend) {
     // was run against the currently-targeted host, so a saved preset
     // from a prior NVIDIA target doesn't pollute a non-NVIDIA launch
     // with misleading prefixes.
-    const _sb = String(_hwfitCache?.system?.backend || '').toLowerCase();
+    const _sb = String(_activeBackend || _hwfitCache?.system?.backend || '').toLowerCase();
     const _hwfitHost = String(_hwfitCache?._scannedHost || '');
     const _curHost = _targetHost;
     const _isCudaTarget = (_sb === 'cuda') && (_hwfitHost === _curHost);
@@ -1132,7 +1132,7 @@ async function _fetchDependencies() {
     // OS+backend-aware install command per row (e.g. add nvidia-cuda-toolkit
     // on a CUDA-Debian box, vulkan-headers on a Vulkan-Arch box, etc.)
     // instead of dumping every distro's syntax as a hint.
-    const _depBackend = String(_hwfitCache?.system?.backend || '').toLowerCase();
+    const _depBackend = String(_activeBackend || _hwfitCache?.system?.backend || '').toLowerCase();
     if (_depBackend && _hwfitCache?._scannedHost === _depHost) {
       _pkgParams.set('backend', _depBackend);
     }
