@@ -1055,10 +1055,29 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('      echo "[odysseus] Building llama-server-cuda (CUDA)..."')
     runner_lines.append('      cd "$HOME/llama.cpp"')
     runner_lines.append('      rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j"$NPROC" --target llama-server && cp build/bin/llama-server "$HOME/bin/llama-server-cuda"')
-    # Wrapper that routes based on HIP_VISIBLE_DEVICES
-    runner_lines.append('      printf \'#!/bin/sh\\nif [ -n "$HIP_VISIBLE_DEVICES" ]; then\\n  exec $HOME/bin/llama-server-hip "$@"\\nelse\\n  exec $HOME/bin/llama-server-cuda "$@"\\nfi\\n\' > "$HOME/bin/llama-server"')
+    # Wrapper that routes based on HIP_VISIBLE_DEVICES. Bake in the absolute
+    # bin dir NOW (build time, when $HOME is known-correct) rather than
+    # leaving $HOME to be re-evaluated when the wrapper actually runs — the
+    # process that later execs this wrapper is not guaranteed to have the
+    # same $HOME as the build script (e.g. HOME=/root there vs /app here),
+    # which silently sends it looking for llama-server-hip/-cuda in the
+    # wrong directory. $HIP_VISIBLE_DEVICES and "$@" must stay deferred to
+    # actual launch time, so only the bin dir is resolved eagerly here.
+    runner_lines.append('      _odysseus_bin_dir="$HOME/bin"')
+    runner_lines.append('      printf \'#!/bin/sh\\nif [ -n "$HIP_VISIBLE_DEVICES" ]; then\\n  exec %s/llama-server-hip "$@"\\nelse\\n  exec %s/llama-server-cuda "$@"\\nfi\\n\' "$_odysseus_bin_dir" "$_odysseus_bin_dir" > "$HOME/bin/llama-server"')
     runner_lines.append('      chmod +x "$HOME/bin/llama-server"')
-    runner_lines.append('      echo "[odysseus] Dual llama-server ready — HIP_VISIBLE_DEVICES set → ROCm build, else → CUDA build"')
+    # Report honestly — the two cmake build lines above are only && -chained
+    # internally, so a failed compile/link just falls through to these lines
+    # instead of aborting the script. Without this check, a build that
+    # produced neither binary still printed "ready".
+    runner_lines.append('      if [ -x "$HOME/bin/llama-server-hip" ] && [ -x "$HOME/bin/llama-server-cuda" ]; then')
+    runner_lines.append('        echo "[odysseus] Dual llama-server ready — HIP_VISIBLE_DEVICES set → ROCm build, else → CUDA build"')
+    runner_lines.append('      else')
+    runner_lines.append('        echo "[odysseus] WARNING: dual build incomplete — missing binaries:"')
+    runner_lines.append('        [ -x "$HOME/bin/llama-server-hip" ] || echo "[odysseus]   - llama-server-hip (ROCm/HIP build failed)"')
+    runner_lines.append('        [ -x "$HOME/bin/llama-server-cuda" ] || echo "[odysseus]   - llama-server-cuda (CUDA build failed)"')
+    runner_lines.append('        echo "[odysseus]   Scroll up for the actual compile/link error."')
+    runner_lines.append('      fi')
     # ── ROCm only ────────────────────────────────────────────────────────────
     runner_lines.append('    elif [ "$_has_rocm" = true ]; then')
     runner_lines.append('      rm -rf build')

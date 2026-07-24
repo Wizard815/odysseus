@@ -20,6 +20,22 @@ services:
         BASE_IMAGE: ${ODYSSEUS_IMAGE:-zenth815/odysseus-frontend:latest}
         ROCM_VERSION: ${ROCM_VERSION:-6.1.2}
         INSTALL_CUDA: "true"
+    # Persist the Cookbook-built llama.cpp binaries (~/bin) and source/build
+    # tree (~/llama.cpp) across container recreates. Without this, every
+    # `docker compose up -d --build` / image update wipes the compiled
+    # llama-server-hip / llama-server-cuda binaries (they live in the
+    # container's writable layer, not a volume), forcing a full HIP+CUDA
+    # recompile on the next serve — or, if that rebuild half-fails, a silent
+    # CPU fallback. Both paths must be persisted together: the thin
+    # llama-server binaries dynamically link the .so files under
+    # ~/llama.cpp/build*/bin, so persisting one without the other breaks them.
+    volumes:
+      - ${APP_DATA_DIR:-./data}/llama-cpp/bin:/app/bin:z
+      - ${APP_DATA_DIR:-./data}/llama-cpp/src:/app/llama.cpp:z
+      # Separate checkout used only when LLAMACPP_ROCM_REPO is set (see
+      # cookbook_helpers.py's _rocm_llama_cpp_repo()) — persisted too, else
+      # every container recreate re-clones and rebuilds the fork from scratch.
+      - ${APP_DATA_DIR:-./data}/llama-cpp/rocm-src:/app/llama.cpp-rocm:z
     devices:
       - /dev/kfd
       - /dev/dri
@@ -34,6 +50,10 @@ services:
       - HIPCXXFLAGS=-Wno-narrowing -Wno-c++11-narrowing
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Passed through so cookbook_helpers.py's _rocm_llama_cpp_repo() can see
+      # it — .env alone only feeds ${VAR} substitution in this YAML, it does
+      # NOT inject into the container process without an explicit line here.
+      - LLAMACPP_ROCM_REPO=${LLAMACPP_ROCM_REPO:-}
     deploy:
       resources:
         reservations:
