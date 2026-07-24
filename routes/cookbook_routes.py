@@ -3130,13 +3130,19 @@ def setup_cookbook_routes() -> APIRouter:
         }
 
     @router.get("/api/cookbook/gpus")
-    async def list_gpus(request: Request, host: str | None = None, ssh_port: str | None = None):
+    async def list_gpus(request: Request, host: str | None = None, ssh_port: str | None = None, backend: str | None = None):
         """Probe GPU memory/process state locally or via SSH.
 
         Probe order:
             1. NVIDIA via nvidia-smi
             2. AMD/ROCm and unified-memory APUs via /sys/class/drm
             3. Generic GPU device holders via /dev/kfd and /dev/dri/renderD*
+
+        On a dual-vendor host (both NVIDIA and AMD present), step 1 always
+        wins and step 2 never even runs — nvidia-smi finding anything short-
+        circuits the whole probe. `backend` lets the frontend say which
+        vendor is actually active (the CUDA/ROCm toggle) so a ROCm-active
+        launch panel probes AMD instead of always landing on the NVIDIA card.
 
         Returned shape:
             { "ok": True, "gpus": [
@@ -3151,6 +3157,23 @@ def setup_cookbook_routes() -> APIRouter:
         require_admin(request)
         host = validate_remote_host(host)
         ssh_port = validate_ssh_port(ssh_port)
+        want_rocm = (backend or "").strip().lower() == "rocm"
+
+        if want_rocm:
+            amd_gpus = await _probe_amd_sysfs(host, ssh_port)
+            if amd_gpus:
+                _amd_wrap_backend = str(amd_gpus[0].get("backend") or "rocm")
+                return {
+                    "ok": True,
+                    "gpus": amd_gpus,
+                    "backend": _amd_wrap_backend,
+                    "source": "amd-sysfs",
+                }
+            # No AMD GPU actually visible despite the ROCm toggle being active
+            # (stale toggle state, or a probe running on a different host) —
+            # fall through to the normal NVIDIA-first probe below rather than
+            # returning an empty/misleading result.
+
         gpu_query = "nvidia-smi --query-gpu=index,name,memory.free,memory.total,memory.used,utilization.gpu,uuid --format=csv,noheader,nounits"
         nvidia_error = None
         try:

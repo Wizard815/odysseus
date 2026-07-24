@@ -2102,6 +2102,7 @@ function _rerenderCachedModels() {
             const _sp = (_es.servers || []).find(s => s.host === host)?.port;
             if (_sp) params.set('ssh_port', _sp);
           }
+          if (String(_hwfitCache?.system?.backend || '').toLowerCase() === 'rocm') params.set('backend', 'rocm');
           const res = await fetch('/api/cookbook/gpus' + (params.toString() ? '?' + params : ''));
           const data = await res.json();
           const gpus = Array.isArray(data) ? data : (data.gpus || []);
@@ -2932,6 +2933,10 @@ function _rerenderCachedModels() {
           const remoteHost = (hostEl && hostEl.value || '').trim();
           const params = new URLSearchParams();
           if (remoteHost) params.set('host', remoteHost);
+          // Without this, the probe always lands on nvidia-smi first and hides
+          // every AMD GPU button on a dual-vendor host, even with ROCm active.
+          const _probeBackend = String(_hwfitCache?.system?.backend || '').toLowerCase();
+          if (_probeBackend === 'rocm') params.set('backend', 'rocm');
           const url = '/api/cookbook/gpus' + (params.toString() ? '?' + params.toString() : '');
           const res = await fetch(url, { credentials: 'same-origin' });
           let data;
@@ -3455,6 +3460,7 @@ function _rerenderCachedModels() {
                 const _sp = (_serverByVal?.(launchTarget.serverKey || _gh) || {}).port;
                 if (_sp) _gp.set('ssh_port', _sp);
               }
+              if (String(_hwfitCache?.system?.backend || '').toLowerCase() === 'rocm') _gp.set('backend', 'rocm');
               const _gr = await fetch('/api/cookbook/gpus' + (_gp.toString() ? '?' + _gp : ''), { credentials: 'same-origin' });
               if (_gr.ok) {
                 const _gd = await _gr.json();
@@ -3567,6 +3573,7 @@ function _rerenderCachedModels() {
               _probeParams.set('host', _probeHost);
               if (launchTarget.port) _probeParams.set('ssh_port', launchTarget.port);
             }
+            if (String(_hwfitCache?.system?.backend || '').toLowerCase() === 'rocm') _probeParams.set('backend', 'rocm');
             const _probeRes = await fetch('/api/cookbook/gpus' + (_probeParams.toString() ? '?' + _probeParams : ''), { credentials: 'same-origin' });
             const _probeData = await _probeRes.json();
             const _probeGpus = Array.isArray(_probeData) ? _probeData : (_probeData.gpus || []);
