@@ -73,6 +73,7 @@ RUN sed -i 's|-DGGML_HIP=ON|-DGGML_HIP=ON -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno
 # routes/ refreshed but src/ left stale) crashes on import at startup instead
 # of failing the build.
 COPY app.py /app/app.py
+COPY companion/ /app/companion/
 COPY core/ /app/core/
 COPY routes/ /app/routes/
 COPY services/ /app/services/
