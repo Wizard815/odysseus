@@ -68,9 +68,15 @@ RUN sed -i 's|-DGGML_HIP=ON|-DGGML_HIP=ON -DCMAKE_CXX_FLAGS="-Wno-narrowing -Wno
 # Layer local customizations on top — overrides anything from the base image,
 # in case it lags behind this checkout (e.g. the dual ROCm+CUDA build wrapper
 # and GPU routing fixes above only exist in the local source, not yet in any
-# published tag).
+# published tag). Must cover every backend source dir, not just the GPU-related
+# ones — routes/ imports from src/ and core/ too, and a partial overlay (e.g.
+# routes/ refreshed but src/ left stale) crashes on import at startup instead
+# of failing the build.
+COPY app.py /app/app.py
+COPY core/ /app/core/
 COPY routes/ /app/routes/
 COPY services/ /app/services/
+COPY src/ /app/src/
 COPY static/ /app/static/
 
 # Install Python dependencies in a virtualenv to avoid system glibc conflicts
