@@ -2370,7 +2370,12 @@ export function _renderRunningTab() {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();  // don't toggle the section collapse
       const host = btn.dataset.stopServer;
-      const running = _loadTasks().filter(t => _taskServerKey(t) === host && t.status === 'running');
+      // A serve task that's finished loading and is actively answering
+      // requests has status 'ready', not 'running' — only checking
+      // 'running' meant Stop all silently ignored every serve that had
+      // actually come up, and only caught downloads/installs still mid-run.
+      const _liveStatuses = ['running', 'ready', 'loading', 'warming', 'starting'];
+      const running = _loadTasks().filter(t => _taskServerKey(t) === host && _liveStatuses.includes(t.status || ''));
       if (!running.length) { uiModule.showToast(`Nothing running on ${_serverName(host)}`); return; }
       if (!await window.styledConfirm(`Stop ${running.length} running task${running.length > 1 ? 's' : ''} on ${_serverName(host)}?`, { confirmText: 'Stop all' })) return;
       // Mark every task as user-stopped BEFORE firing the kills so that the
