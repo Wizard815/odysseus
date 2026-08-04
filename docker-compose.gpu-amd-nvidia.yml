@@ -29,6 +29,8 @@ services:
       # container recreate does not silently remove installed serve engines.
       - ${APP_DATA_DIR:-./data}/local:/app/.local:z
       - /var/run/docker.sock:/var/run/docker.sock
+#      - ${APP_DATA_DIR:-./data}/llama-cpp/bin:/app/bin:z
+ #     - ${APP_DATA_DIR:-./data}/llama-cpp/src:/app/llama.cpp:z
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # AMD ROCm — pass through compute and render devices.

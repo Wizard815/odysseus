@@ -847,6 +847,11 @@ export function _buildServeCmd(f, modelName, backend) {
       // so CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES would be misleading
       // clutter ("why is CUDA pinned for a CPU run?").
       if ((!_isWin || _localWindows) && !_cpuOnly) p += _gpuEnvPrefix(gpuId);
+      // Fork-specific env vars (e.g. gfx906 forks' GGML_ENABLE_CUSTOM_AR,
+      // HSA_FORCE_FINE_GRAIN_PCIE) have nowhere else to live for llama.cpp —
+      // mirror the vLLM/SGLang extra_env handling instead of dropping them.
+      const _lcExtraEnv = (f.extra_env ?? '').toString().replace(/\s+/g, ' ').trim();
+      if (_lcExtraEnv && (!_isWin || _localWindows)) p += _lcExtraEnv + ' ';
       return p;
     })();
     if (f.unified_mem && !_cpuOnly && _isWin && !_localWindows && _isCudaTarget) cmd += `$env:GGML_CUDA_ENABLE_UNIFIED_MEMORY="1"; `;
@@ -3625,7 +3630,13 @@ document.addEventListener('cookbook:state-synced', () => {
   if (isVisible()) {
     const activeTab = document.querySelector('#cookbook-modal .cookbook-tab.active')?.dataset?.backend || '';
     if (activeTab === 'Running') _renderRunningTab();
-    else if (activeTab === 'Serve') _rerenderCachedModels();
+    // A background sync (e.g. tab regains focus) used to unconditionally
+    // rebuild the whole cached-models list here, which collapses any
+    // currently-open Launch panel and throws away every unsaved edit —
+    // GPU picker, Advanced fields, the manual-edit toggle, all of it,
+    // with no warning. Skip the rebuild while a panel is actually open;
+    // it'll pick up the fresh sync next time nothing's being edited.
+    else if (activeTab === 'Serve' && !document.querySelector('.hwfit-serve-panel')) _rerenderCachedModels();
   }
 });
 

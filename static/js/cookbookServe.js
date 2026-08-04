@@ -1640,7 +1640,14 @@ function _rerenderCachedModels() {
       // already exported so they expand correctly here.
       // CSS places this beside vLLM's Env Preset, but lets it span the full
       // row for SGLang where that preset field is hidden.
-      panelHtml += `<label class="hwfit-backend-vllm hwfit-backend-sglang hwfit-extra-env-label">${_l('Env','Extra KEY=VALUE env-var pairs prepended to the launch (space-separated). The Env Preset above covers the usual MiniMax M3 values; use this for additional overrides.')}<input type="text" class="hwfit-sf" data-field="extra_env" value="${esc(svm('extra_env', sv('extra_env','')))}" placeholder="NCCL_P2P_DISABLE=1" style="width:100%;" /></label>`;
+      panelHtml += `</div>`;
+      // Env field lives in its own row (not the vLLM/SGLang-only div above)
+      // because its parent's hwfit-backend-vllm/-sglang classes hide the
+      // whole subtree for llama.cpp — nesting it there silently hid it
+      // regardless of the label's own classes, since a display:none
+      // ancestor hides descendants no matter what they're tagged with.
+      panelHtml += `<div class="hwfit-serve-row hwfit-backend-vllm hwfit-backend-sglang hwfit-backend-llamacpp">`;
+      panelHtml += `<label class="hwfit-extra-env-label" style="grid-column: 1 / -1;">${_l('Env','Extra KEY=VALUE env-var pairs prepended to the launch (space-separated). For llama.cpp this is where fork-specific flags like GGML_ENABLE_CUSTOM_AR=1 go.')}<input type="text" class="hwfit-sf" data-field="extra_env" value="${esc(svm('extra_env', sv('extra_env','')))}" placeholder="NCCL_P2P_DISABLE=1 GGML_ENABLE_CUSTOM_AR=1" style="width:100%;" /></label>`;
       panelHtml += `</div>`;
       // Row 2b: Diffusers settings
       const diffDefaultNegative = 'low quality, blurry, out of focus, deformed, distorted, disfigured, unfinished, smudged, watermark, artifacts';
@@ -1798,7 +1805,11 @@ function _rerenderCachedModels() {
       // button can sit at its top-right corner — same pattern as the chat
       // run-output panel.
       panelHtml += `<details class="hwfit-serve-cmd-details">`;
-      panelHtml += `<summary class="hwfit-serve-cmd-summary">Launch command</summary>`;
+      panelHtml += `<summary class="hwfit-serve-cmd-summary">Launch command`
+        + `<label class="hwfit-manual-edit-toggle" style="float:right;font-weight:normal;font-size:11px;opacity:0.8;cursor:pointer;user-select:none;" title="ON: this box is frozen — GPU clicks and Advanced-field changes never touch it, edit it directly instead. OFF: it always regenerates live from the fields above; direct edits here won't stick.">`
+        + `<input type="checkbox" class="hwfit-manual-edit-checkbox" style="vertical-align:middle;margin-right:3px;" /> Manual edit`
+        + `</label>`
+        + `</summary>`;
       panelHtml += `<div class="hwfit-serve-cmd-wrap">`;
       panelHtml += `<textarea class="hwfit-serve-cmd" spellcheck="false" rows="2"></textarea>`;
       panelHtml += `<button type="button" class="cookbook-btn hwfit-serve-copy hwfit-serve-copy-inline" title="Copy launch command" aria-label="Copy"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
@@ -2454,7 +2465,25 @@ function _rerenderCachedModels() {
         }
         updateBackendVisibility();
         updateRuntimeReadinessNote();
-        updateCmd();
+        // A preset saved from a hand-edited command carries that raw text in
+        // fields._manual_cmd (see _saveCurrentConfig). Restore it verbatim and
+        // re-arm the manual-edit flag instead of letting updateCmd() below
+        // silently regenerate a default from the just-restored structured
+        // fields — that was discarding every manual edit on preset load.
+        const _restoredManualCmd = p.fields && typeof p.fields._manual_cmd === 'string' ? p.fields._manual_cmd : '';
+        if (_restoredManualCmd) {
+          panel._cmd = _restoredManualCmd;
+          const _mcBox = panel.querySelector('.hwfit-serve-cmd');
+          if (_mcBox) {
+            _mcBox.value = _formatServeCmdPreview(_restoredManualCmd);
+            _mcBox.style.height = 'auto';
+            _mcBox.style.height = _mcBox.scrollHeight + 'px';
+          }
+          _cmdManuallyEdited = true;
+        } else {
+          _cmdManuallyEdited = false;
+          updateCmd();
+        }
         panel.querySelectorAll('.cookbook-slot-btn').forEach(b => b.classList.remove('active'));
         panel.querySelector(`.cookbook-slot-btn[data-slot="${slotIdx}"]`)?.classList.add('active');
       }
@@ -2659,7 +2688,15 @@ function _rerenderCachedModels() {
           btn.classList.toggle('active');
           const activeBtns = [...panel.querySelectorAll('.cookbook-gpu-btn.active')];
           const active = activeBtns.map(b => b.dataset.gpu).join(',');
-          panel.querySelector('[data-field="gpus"]').value = active;
+          const _gpuHidden = panel.querySelector('[data-field="gpus"]');
+          _gpuHidden.value = active;
+          // Also fire a real change event (dynamically-appended GPU buttons
+          // already did this — see the probe-driven handler below). Setting
+          // .value programmatically fires nothing on its own; this makes the
+          // hidden field participate in the same generic .hwfit-sf listener
+          // as every other field, instead of relying solely on the explicit
+          // updateCmd() call a few lines down.
+          _gpuHidden.dispatchEvent(new Event('change', { bubbles: true }));
           // Guard: vLLM/SGLang tensor-parallel only works across IDENTICAL GPUs.
           // If the probe knows the per-GPU models and the selection mixes types,
           // warn — serving across a mixed set will fail or run badly.
@@ -2676,7 +2713,10 @@ function _rerenderCachedModels() {
               panel._mixedGpuWarned = false;  // reset once they're back to one pool
             }
           }
-          updateCmd();
+          // GPU selection used to always rebuild the command, silently
+          // discarding a hand-edited one (see _cmdManuallyEdited). Respect
+          // manual edits the same way the save/load and ctx-clamp paths do.
+          if (!_cmdManuallyEdited) updateCmd();
           try { _updateRecommendedCtx(false); } catch {}
         });
       });
@@ -3127,7 +3167,9 @@ function _rerenderCachedModels() {
           if (e.target.dataset.field === 'venv') {
             updateRuntimeReadinessNote();
           }
-          updateCmd();
+          // Same fix as the GPU buttons: don't let an Advanced-panel field
+          // change silently overwrite a hand-edited command.
+          if (!_cmdManuallyEdited) updateCmd();
           if (['backend', 'tp', 'gpu_mem', 'vllm_kv_cache_dtype', 'gpus'].includes(e.target.dataset.field)) {
             try { _updateRecommendedCtx(false); } catch {}
           }
@@ -3244,7 +3286,38 @@ function _rerenderCachedModels() {
         _cmdTextarea.style.height = _cmdTextarea.scrollHeight + 'px';
         _cmdManuallyEdited = true;
       }
-      if (_cmdTextarea) _cmdTextarea.addEventListener('input', () => { _cmdManuallyEdited = true; });
+      if (_cmdTextarea) _cmdTextarea.addEventListener('input', () => { _cmdManuallyEdited = true; if (_manualEditToggle) _manualEditToggle.checked = true; });
+
+      // Explicit Manual edit toggle — the box used to silently flip into
+      // "frozen" mode the instant you typed in it, with no way back except
+      // deleting the whole preset (and even that didn't help: the live
+      // per-model state in SERVE_STATE_KEY is separate from presets and
+      // re-freezes the box every time the panel reopens). This gives an
+      // explicit, visible switch, and turning it OFF clears that persisted
+      // state immediately instead of waiting for the next Launch click.
+      const _manualEditToggle = panel.querySelector('.hwfit-manual-edit-checkbox');
+      const _manualEditLabel = panel.querySelector('.hwfit-manual-edit-toggle');
+      // Keep clicks on the toggle from also toggling the <details> it lives
+      // inside (the label sits in the <summary>). The CSP here blocks
+      // inline onclick="…" attributes outright (script-src-attr), so this
+      // has to be a real addEventListener, not an HTML attribute.
+      if (_manualEditLabel) _manualEditLabel.addEventListener('click', (e) => e.stopPropagation());
+      if (_manualEditToggle) {
+        _manualEditToggle.checked = _cmdManuallyEdited;
+        _manualEditToggle.addEventListener('change', () => {
+          _cmdManuallyEdited = _manualEditToggle.checked;
+          if (_cmdManuallyEdited) return;   // turning ON just freezes whatever's showing
+          updateCmd();
+          try {
+            let cur = {};
+            try { cur = JSON.parse(localStorage.getItem(SERVE_STATE_KEY)) || {}; } catch {}
+            const byRepo = (cur && cur._byRepo && typeof cur._byRepo === 'object') ? cur._byRepo : {};
+            if (byRepo[repo] && typeof byRepo[repo] === 'object') delete byRepo[repo]._manual_cmd;
+            localStorage.setItem(SERVE_STATE_KEY, JSON.stringify({ ...cur, _byRepo: byRepo }));
+          } catch {}
+          uiModule.showToast('Manual edit off — launch command now follows the fields above');
+        });
+      }
 
       // Cancel button — collapses the serve config panel (same effect as
       // tapping the row to toggle it shut). Mobile users wanted an explicit

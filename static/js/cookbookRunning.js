@@ -748,7 +748,12 @@ function _serveOutputLooksReady(task) {
   return !!task?._serveReady
     || /Application startup complete/i.test(out)
     || /Ollama API ready on port\s+\d+/i.test(out)
-    || /(?:GET|POST)\s+\/[^\s]*\s+HTTP\/[\d.]+"\s*2\d\d/i.test(out);
+    || /(?:GET|POST)\s+\/[^\s]*\s+HTTP\/[\d.]+"\s*2\d\d/i.test(out)
+    // llama.cpp's own server (llama-server / llama-server-hip / llama-server-cuda)
+    // never prints "Application startup complete" — it logs its own readiness
+    // lines instead, which the checks above never covered.
+    || /llama_server:\s*listening on http/i.test(out)
+    || /main:\s*server is listening/i.test(out);
 }
 
 function _normalizeTaskForDisplay(task) {
@@ -1101,6 +1106,22 @@ export function _tmuxForceKill(task) {
   const host = _taskRemoteHost(task);
   if (host) {
     return `ssh ${_sshPrefix(_getPort(task))}${host} ${_shQuote(_remoteTmuxPrefix() + inner)}`;
+  }
+  return inner;
+}
+
+// Last-resort safety net for Stop/Kill: `tmux kill-session` tears down the
+// pane, but the launched server (llama-server, vLLM, …) runs as a direct
+// child of that pane's shell and is not guaranteed to die with it — e.g. if
+// it's mid-syscall loading a large model, or has already drifted out of the
+// pane's process group. When that happens the process is orphaned but still
+// bound to its port and still holding GPU VRAM, while the UI shows
+// "stopped". Kill by port as a fallback so Stop actually frees it every time.
+function _portForceKill(task, port) {
+  const inner = `fuser -k ${port}/tcp 2>/dev/null; true`;
+  const host = _taskRemoteHost(task);
+  if (host) {
+    return `ssh ${_sshPrefix(_getPort(task))}${host} ${_shQuote(inner)}`;
   }
   return inner;
 }
@@ -2300,7 +2321,12 @@ export function _renderRunningTab() {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();  // don't toggle the section collapse
       const host = btn.dataset.stopServer;
-      const running = _loadTasks().filter(t => _taskServerKey(t) === host && t.status === 'running');
+      // A serve task that's finished loading and is actively answering
+      // requests has status 'ready', not 'running' — only checking
+      // 'running' meant Stop all silently ignored every serve that had
+      // actually come up, and only caught downloads/installs still mid-run.
+      const _liveStatuses = ['running', 'ready', 'loading', 'warming', 'starting'];
+      const running = _loadTasks().filter(t => _taskServerKey(t) === host && _liveStatuses.includes(t.status || ''));
       if (!running.length) { uiModule.showToast(`Nothing running on ${_serverName(host)}`); return; }
       if (!await window.styledConfirm(`Stop ${running.length} running task${running.length > 1 ? 's' : ''} on ${_serverName(host)}?`, { confirmText: 'Stop all' })) return;
       // Mark every task as user-stopped BEFORE firing the kills so that the
@@ -2913,6 +2939,21 @@ export function _renderRunningTab() {
           body: JSON.stringify({ command: _tmuxGracefulKill(task) }),
         });
       } catch {}
+      // ...tmux kill-session doesn't guarantee the server process died with
+      // it (see _portForceKill) — force-kill anything still bound to the
+      // serve port so Stop can't leave an orphan holding GPU VRAM.
+      if (task.type === 'serve' && !_isWindows(task)) {
+        const port = _taskPort(task);
+        if (port) {
+          try {
+            await fetch('/api/shell/exec', {
+              method: 'POST', credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: _portForceKill(task, port) }),
+            });
+          } catch {}
+        }
+      }
       // ...then smoothly fade/slide the card out and auto-remove it — no manual
       // ⋮ → Remove needed.
       _animateOutThenRemove(el, task.sessionId);
@@ -2965,6 +3006,21 @@ export function _renderRunningTab() {
           killOk = false;
         }
       } catch (_) { killOk = false; }
+      // has-session only proves the tmux session is gone, not that the
+      // server process died with it (see _portForceKill) — force-kill
+      // anything still bound to the serve port regardless of that result.
+      if (task.type === 'serve' && !_isWindows(task)) {
+        const port = _taskPort(task);
+        if (port) {
+          try {
+            await fetch('/api/shell/exec', {
+              method: 'POST', credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: _portForceKill(task, port) }),
+            });
+          } catch {}
+        }
+      }
       if (!killOk) {
         try { uiModule.showToast('Kill failed — session may still be running. Check `tmux ls` on the server.', 'error'); } catch (_) {}
         return;  // leave the row so the user can retry
