@@ -356,12 +356,20 @@ class McpManager:
             # installed" (the ImportError handler couldn't tell a missing
             # package from a renamed symbol in an installed one).
             from mcp.client.streamable_http import streamable_http_client
+            # mcp>=2.0 also dropped streamable_http_client's own headers=/auth=
+            # kwargs — it now only accepts a pre-configured http_client
+            # (httpx2.AsyncClient), which is where headers/auth are set
+            # instead. terminate_on_close defaults to True, so the transport
+            # itself still owns closing this client; no separate stack entry
+            # needed for it.
+            import httpx2
             from contextlib import AsyncExitStack
 
             stack = AsyncExitStack()
             if headers:
+                _http_client = httpx2.AsyncClient(headers=headers)
                 transport = await stack.enter_async_context(
-                    streamable_http_client(url, headers=headers)
+                    streamable_http_client(url, http_client=_http_client)
                 )
             else:
                 from src.mcp_oauth import build_provider, clear_auth_url
@@ -373,7 +381,10 @@ class McpManager:
                     }
 
                 provider = build_provider(server_id, url, on_redirect=_on_redirect)
-                transport = await stack.enter_async_context(streamable_http_client(url, auth=provider))
+                _http_client = httpx2.AsyncClient(auth=provider)
+                transport = await stack.enter_async_context(
+                    streamable_http_client(url, http_client=_http_client)
+                )
             read_stream, write_stream, _get_session_id = transport
             session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
             await session.initialize()
