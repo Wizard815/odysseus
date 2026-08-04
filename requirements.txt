@@ -38,10 +38,12 @@ python-dateutil
 caldav
 cryptography
 bcrypt
-# Built-in servers use the v1 low-level Server decorator API. MCP SDK v2 is a
-# breaking rewrite, so keep fresh installs on the maintained v1 line until the
-# servers are migrated together.
-mcp<2
+# Deliberately unpinned (upstream pins mcp<2 for v1 API stability) — this
+# fork's src/mcp_manager.py has been patched to work against the mcp>=2
+# Streamable HTTP API (renamed streamable_http_client, http_client= instead
+# of headers=/auth=). Re-pinning to <2 would silently break those patches
+# by handing them a v1 client whose API no longer matches what they call.
+mcp>=2
 pyotp
 qrcode[pil]
 croniter
