@@ -418,7 +418,7 @@ class McpManager:
             self._connections[server_id] = {"status": "error", "error": f"mcp import failed: {e}", "name": name}
             return False
         except Exception as e:
-            logger.error(f"Failed to connect HTTP MCP server {name} ({server_id}): {e}")
+            logger.error(f"Failed to connect HTTP MCP server {name} ({server_id}): {e}", exc_info=True)
             self._connections[server_id] = {"status": "error", "error": str(e), "name": name}
             return False
 
