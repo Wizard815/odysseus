@@ -706,8 +706,16 @@ class McpManager:
             label = f"{server_name} ({identity})" if identity else server_name
             lines.append(f"\n**{label}:**")
             for t in server_tools:
-                # Truncate long descriptions
-                desc = t['description'][:120] + '...' if len(t['description']) > 120 else t['description']
+                # Flatten to a single line first — a multi-line docstring
+                # (e.g. one that documents params as its own "- name: ..."
+                # bullets) would otherwise smuggle embedded newlines into
+                # this one-line-per-tool prompt format, which tool_index.py
+                # re-parses line-by-line and would misread each bullet as a
+                # brand-new top-level tool (issue: colliding "mcp_targetType"
+                # IDs across every tool that documents a targetType param).
+                _flat_desc = (t['description'] or '').replace('\n', ' ').replace('\r', ' ')
+                _flat_desc = ' '.join(_flat_desc.split())
+                desc = _flat_desc[:120] + '...' if len(_flat_desc) > 120 else _flat_desc
                 # Include the tool's declared inputs so the model calls it with
                 # real argument names instead of guessing from the description
                 # alone (issue #2509).

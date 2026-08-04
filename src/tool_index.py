@@ -278,6 +278,28 @@ class ToolIndex:
             self._mcp_generation = gen
             return
 
+        # Belt-and-suspenders against the upstream text format ever smuggling
+        # a duplicate id in again (this is what caused every MCP tool to be
+        # unindexed at once — Chroma's upsert rejects the whole batch on any
+        # duplicate id, not just the offending entries). De-dupe by keeping
+        # the first occurrence of each id so one bad entry can never again
+        # take the rest of the batch down with it.
+        _seen_ids = set()
+        _dedup_ids, _dedup_docs, _dedup_meta = [], [], []
+        for _id, _doc, _meta in zip(ids, docs, metadatas):
+            if _id in _seen_ids:
+                continue
+            _seen_ids.add(_id)
+            _dedup_ids.append(_id)
+            _dedup_docs.append(_doc)
+            _dedup_meta.append(_meta)
+        if len(_dedup_ids) != len(ids):
+            logger.warning(
+                "MCP tool indexing: dropped %d duplicate id(s) before upsert",
+                len(ids) - len(_dedup_ids),
+            )
+        ids, docs, metadatas = _dedup_ids, _dedup_docs, _dedup_meta
+
         indexed = False
         for lane in self._lanes:
             try:
