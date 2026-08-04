@@ -247,11 +247,16 @@ class McpManager:
             logger.info(f"MCP server connected: {name} ({server_id}) - {len(tools)} tools via stdio")
             return True
 
-        except ImportError:
-            logger.warning("MCP package not installed. Install with: pip install mcp")
+        except ImportError as e:
+            # A bare "not installed" message here is misleading when the
+            # package IS installed but a specific name inside it doesn't
+            # exist (e.g. a renamed export after an mcp version bump) —
+            # include the real error so that case isn't mistaken for the
+            # package missing entirely.
+            logger.warning("MCP import failed (%s). If 'mcp' is installed, this is likely an API mismatch, not a missing package.", e)
             self._connections[server_id] = {
                 "status": "error",
-                "error": "mcp package not installed",
+                "error": f"mcp import failed: {e}",
                 "name": name,
             }
             return False
@@ -305,9 +310,9 @@ class McpManager:
                 if not registered:
                     await stack.aclose()
 
-        except ImportError:
-            logger.warning("MCP package not installed. Install with: pip install mcp")
-            self._connections[server_id] = {"status": "error", "error": "mcp package not installed", "name": name}
+        except ImportError as e:
+            logger.warning("MCP import failed (%s). If 'mcp' is installed, this is likely an API mismatch, not a missing package.", e)
+            self._connections[server_id] = {"status": "error", "error": f"mcp import failed: {e}", "name": name}
             return False
 
     async def _start_http_connect(self, server_id: str, name: str, url: str, wait: float = 8.0, headers: Optional[Dict[str, str]] = None) -> bool:
@@ -345,13 +350,18 @@ class McpManager:
         """
         try:
             from mcp import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
+            # mcp>=2.0 renamed this export from streamablehttp_client to
+            # streamable_http_client (extra underscore) — the old name no
+            # longer exists, which surfaced as a bare "MCP package not
+            # installed" (the ImportError handler couldn't tell a missing
+            # package from a renamed symbol in an installed one).
+            from mcp.client.streamable_http import streamable_http_client
             from contextlib import AsyncExitStack
 
             stack = AsyncExitStack()
             if headers:
                 transport = await stack.enter_async_context(
-                    streamablehttp_client(url, headers=headers)
+                    streamable_http_client(url, headers=headers)
                 )
             else:
                 from src.mcp_oauth import build_provider, clear_auth_url
@@ -363,7 +373,7 @@ class McpManager:
                     }
 
                 provider = build_provider(server_id, url, on_redirect=_on_redirect)
-                transport = await stack.enter_async_context(streamablehttp_client(url, auth=provider))
+                transport = await stack.enter_async_context(streamable_http_client(url, auth=provider))
             read_stream, write_stream, _get_session_id = transport
             session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
             await session.initialize()
@@ -392,9 +402,9 @@ class McpManager:
             self._generation += 1
             logger.info(f"MCP server connected: {name} ({server_id}) - {len(tools)} tools via http")
             return True
-        except ImportError:
-            logger.warning("MCP package not installed. Install with: pip install mcp")
-            self._connections[server_id] = {"status": "error", "error": "mcp package not installed", "name": name}
+        except ImportError as e:
+            logger.warning("MCP import failed (%s). If 'mcp' is installed, this is likely an API mismatch, not a missing package.", e)
+            self._connections[server_id] = {"status": "error", "error": f"mcp import failed: {e}", "name": name}
             return False
         except Exception as e:
             logger.error(f"Failed to connect HTTP MCP server {name} ({server_id}): {e}")
