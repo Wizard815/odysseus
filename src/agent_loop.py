@@ -3938,10 +3938,28 @@ async def stream_agent_loop(
                     and t.get("name") not in disabled_tools
                 ]
         else:
-            # Local: only MCP schemas when message suggests MCP tool usage
+            # Local: only MCP schemas when message suggests MCP tool usage.
+            # mcp_schemas from _build_system_prompt is the FULL unfiltered set
+            # across every connected MCP server (all 77+ tools, unlike the
+            # API-model branch above which narrows to _relevant_tools before
+            # sending) — a small local model asked to pick the right schema
+            # out of everything at once is far more likely to bleed another
+            # tool's parameter convention into the one it actually meant to
+            # call (e.g. a generic "query" from some other search tool
+            # instead of Kanka's "search_term"). Apply the same RAG-narrowed
+            # filter here that the API branch already uses.
             _last_content = _last_user.lower()
             _wants_mcp = any(kw in _last_content for kw in _MCP_KEYWORDS)
-            all_tool_schemas = mcp_schemas if (_wants_mcp and mcp_schemas) else []
+            if _wants_mcp and mcp_schemas:
+                if _relevant_tools:
+                    all_tool_schemas = [
+                        s for s in mcp_schemas
+                        if s.get("function", {}).get("name") in _relevant_tools
+                    ]
+                else:
+                    all_tool_schemas = mcp_schemas
+            else:
+                all_tool_schemas = []
         agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
 
         _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]

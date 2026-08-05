@@ -385,7 +385,11 @@ class McpManager:
                 transport = await stack.enter_async_context(
                     streamable_http_client(url, http_client=_http_client)
                 )
-            read_stream, write_stream, _get_session_id = transport
+            # mcp>=2.0's streamable_http_client yields (read_stream, write_stream)
+            # only — the session-id getter that used to be a third tuple
+            # element is gone; session id is tracked internally on the
+            # transport now.
+            read_stream, write_stream = transport
             session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
             await session.initialize()
 
