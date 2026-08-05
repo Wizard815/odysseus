@@ -665,7 +665,7 @@ Generate an image. Line 1 = description, line 2 = model name, line 3 = WxH (e.g.
     "manage_skills": "- ```manage_skills``` — Skill registry (SKILL.md format). Args (JSON): {\"action\": \"list|view|view_ref|search|add|edit|patch|publish|delete\", ...}. `list` returns the index of available skills (published + teacher-escalation drafts); `view name=foo` fetches the full SKILL.md; `view_ref name=foo path=...` loads a reference file under the skill directory. For `add`, provide an explicit kebab-case `name` and only report the exact returned name, because storage may normalize or dedupe it. Use this BEFORE doing domain work — there may already be a procedure (published or draft) that prescribes the correct steps. Drafts written by the teacher loop are authoritative guidance even though they're not yet published.",
     "manage_tasks": "- ```manage_tasks``` — Create and manage scheduled background tasks (recurring AI jobs). Args (JSON): {\"action\": \"list|create|edit|delete|pause|resume|run\", ...}",
     "manage_endpoints": "- ```manage_endpoints``` — Add, remove, or configure AI model API endpoints. Args (JSON): {\"action\": \"list|add|delete|enable|disable\", ...}. Use when user wants to add a new AI provider.",
-    "manage_mcp": "- ```manage_mcp``` — Manage MCP (Model Context Protocol) tool servers — external tools that extend your capabilities. Args (JSON): {\"action\": \"list|add|delete|reconnect|list_tools\", ...}",
+    "manage_mcp": "- ```manage_mcp``` — Manage MCP (Model Context Protocol) tool servers — external tools that extend your capabilities. Args (JSON): {\"action\": \"list|add|delete|reconnect|list_tools\", \"server_id\": \"...\", \"query\": \"...\"}. If a connected server's tools aren't showing up as callable functions (you know a server is connected but have nothing to call for it), use `list_tools` with a `query` describing what you need (or the server name) — the matching tools become callable as native functions on your NEXT tool call, not this one, so call list_tools first, then call the tool it surfaced in your following turn.",
     "manage_webhooks": "- ```manage_webhooks``` — Configure outgoing webhooks (HTTP notifications on events like chat completion). Args (JSON): {\"action\": \"list|add|delete|enable|disable\", ...}",
     "manage_tokens": "- ```manage_tokens``` — Generate or revoke API access tokens for external integrations. Args (JSON): {\"action\": \"list|create|delete\", ...}",
     "manage_documents": "- ```manage_documents``` — List, read/open, delete, or tidy documents in the editor panel. Args (JSON): {\"action\": \"list|read|delete|tidy\", ...}. `list` returns rows like `[Title](#document-<id>) — lang, size, updated 5m ago` sorted MOST-RECENT FIRST; the user clicks the anchor to open. `read` (aliases: view/open/get) takes `document_id` and returns the content. When the user asks \"open/show/read my notes\" or \"what documents do I have\", use this — do NOT shell out, do NOT curl.",
@@ -4746,6 +4746,31 @@ async def stream_agent_loop(
                                 break
                     except Exception as _e:
                         logger.debug(f"skill requires_toolsets unlock skipped: {_e}")
+
+            # manage_mcp's list_tools reveals real MCP tool names, but those
+            # names were filtered out of _relevant_tools by the RAG top-k cut
+            # (that's why the model needed to ask in the first place) — so
+            # without this, the schema list next round still excludes them
+            # and the model is stuck re-discovering the same tools forever.
+            # Union the qualified names it just learned about into the
+            # selection so the NEXT round's schema list actually includes
+            # them as callable native functions.
+            if (
+                block.tool_type == "manage_mcp"
+                and _relevant_tools is not None
+                and not result.get("error")
+            ):
+                _mm_tools = result.get("tools") or []
+                _new_mcp = {
+                    t.get("call") for t in _mm_tools
+                    if isinstance(t, dict) and t.get("call") and t.get("call") not in _relevant_tools
+                }
+                if _new_mcp:
+                    _relevant_tools.update(_new_mcp)
+                    logger.info(
+                        "[tool-rag] manage_mcp list_tools unlocked tools for next round: %s",
+                        sorted(_new_mcp),
+                    )
 
             # Extract structured web sources from web_search tool output.
             # web_search returns {"output": ..., "exit_code": 0}; check "output"

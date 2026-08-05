@@ -358,10 +358,23 @@ async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
         if not mcp:
             return {"response": "No MCP manager", "tools": [], "exit_code": 0}
         sid = args.get("server_id", "")
+        query = str(args.get("query", "") or "").strip().lower()
         tools = mcp.get_all_tools()
         if sid:
             tools = [t for t in tools if t.get("server_id") == sid]
+        if query:
+            # Substring match across name/server/description — with several
+            # servers connected the unfiltered list can get long, and this is
+            # the model's only way to narrow it down before deciding what to
+            # call next.
+            tools = [
+                t for t in tools
+                if query in t["name"].lower()
+                or query in t["server_name"].lower()
+                or query in (t.get("description") or "").lower()
+            ]
         items = [{"name": t["name"], "server": t["server_name"],
+                  "call": t["qualified_name"],
                   "description": t.get("description", "")} for t in tools]
         return {"response": f"{len(items)} MCP tools available", "tools": items, "exit_code": 0}
 

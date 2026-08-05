@@ -42,6 +42,12 @@ ALWAYS_AVAILABLE = frozenset({
     "ask_user",
     # Write back to the active plan (tick steps done / revise) during execution.
     "update_plan",
+    # The escape hatch for MCP tool discovery: list_tools(query=...) surfaces
+    # real MCP tool names the RAG top-k cut may have missed, and those names
+    # get unioned into the next round's selection (see the manage_mcp
+    # self-heal block in agent_loop.py). If this itself could be RAG-filtered
+    # out, a missed retrieval has no way to recover.
+    "manage_mcp",
 })
 
 # Tools that the Personal Assistant always has access to during scheduled
@@ -158,6 +164,7 @@ class ToolIndex:
         migrate_legacy_collection(COLLECTION_NAME, self._lanes)
         self._fingerprint = ""
         self._mcp_generation = -1
+        self._mcp_tools_by_server: Dict[str, Set[str]] = {}
         self._healthy = True
         logger.info("ToolIndex initialized (lanes=%s)", [lane.name for lane in self._lanes])
 
@@ -255,6 +262,10 @@ class ToolIndex:
         ids = []
         metadatas = []
         current_server = ""
+        # Server-name -> qualified tool names, for the keyword boost in
+        # get_tools_for_query. Rebuilt fresh each reindex so renamed/removed
+        # servers don't leave stale entries behind.
+        mcp_tools_by_server: Dict[str, Set[str]] = {}
         for line in all_tools.strip().split("\n"):
             line = line.strip()
             # Track which server section we're in (for context in descriptions)
@@ -273,9 +284,17 @@ class ToolIndex:
                     docs.append(doc_text)
                     ids.append(f"mcp_{name}")
                     metadatas.append({"tool_name": name, "tool_type": "mcp"})
+                    # current_server is the display label, e.g. "Kanka" or
+                    # "BoardNotes (user@example.com)" — strip any trailing
+                    # "(identity)" so a bare mention of the server's plain
+                    # name in chat ("search kanka for...") still matches.
+                    _base_server = re.sub(r"\s*\([^)]*\)\s*$", "", current_server).strip().lower()
+                    if _base_server:
+                        mcp_tools_by_server.setdefault(_base_server, set()).add(name)
 
         if not docs:
             self._mcp_generation = gen
+            self._mcp_tools_by_server = {}
             return
 
         # Belt-and-suspenders against the upstream text format ever smuggling
@@ -316,6 +335,7 @@ class ToolIndex:
             logger.warning("MCP tool indexing failed in all embedding lanes")
             return
         self._mcp_generation = gen
+        self._mcp_tools_by_server = mcp_tools_by_server
         logger.info(f"Indexed {len(docs)} MCP tools")
 
     def retrieve(self, query: str, k: int = 8) -> List[str]:
@@ -553,6 +573,15 @@ class ToolIndex:
         for keywords, tools in self._KEYWORD_HINTS.items():
             if any(re.search(rf"\b{re.escape(kw)}\b", ql) for kw in keywords):
                 base.update(tools)
+        # Naming a connected MCP server by name ("search kanka for...",
+        # "what's in boardnotes") is a much stronger, deterministic signal
+        # than embedding similarity — a meta query like "what's in that mcp
+        # I connected" often doesn't score close to any single tool's
+        # description. Force-include every tool that server exposes so the
+        # match doesn't depend on retrieval guessing right.
+        for server_name, tool_names in getattr(self, "_mcp_tools_by_server", {}).items():
+            if server_name and re.search(rf"\b{re.escape(server_name)}\b", ql):
+                base.update(tool_names)
         # Structural scheduling-intent detection — typo-resilient (the literal
         # keyword "every day" misses "every dya"). Catches "every <word>",
         # daily/nightly/etc., or a clock time like "at 7:30 am" / "7am", which
