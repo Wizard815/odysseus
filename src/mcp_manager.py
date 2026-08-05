@@ -210,7 +210,17 @@ class McpManager:
                     tools.append({
                         "name": tool.name,
                         "description": tool.description or "",
-                        "input_schema": tool.inputSchema if hasattr(tool, "inputSchema") else {},
+                        # mcp>=2.0 renamed Tool.inputSchema -> Tool.input_schema
+                        # (confirmed via Tool.model_fields). hasattr(tool,
+                        # "inputSchema") silently returned False for every tool
+                        # on the old name, so every tool's schema fell back to
+                        # {} — the model then genuinely never saw any parameter
+                        # names (confirmed by a model verbatim quoting
+                        # "properties": {} back in its own reasoning) and had
+                        # no way to know it needed e.g. search_term. Check both
+                        # names defensively given how many mcp>=2 renames
+                        # we've already hit.
+                        "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
                         # MCP tool annotations (readOnlyHint / destructiveHint) drive
                         # plan-mode read-only gating. Absent on many servers, so we
                         # fall back to a name heuristic in mcp_tool_is_readonly().
@@ -284,7 +294,8 @@ class McpManager:
                     tools.append({
                         "name": tool.name,
                         "description": tool.description or "",
-                        "input_schema": tool.inputSchema if hasattr(tool, 'inputSchema') else {},
+                        # See stdio connect above — mcp>=2.0 renamed this field.
+                        "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
                         # MCP tool annotations (readOnlyHint / destructiveHint) drive
                         # plan-mode read-only gating. Absent on many servers, so we
                         # fall back to a name heuristic in mcp_tool_is_readonly().
@@ -399,7 +410,8 @@ class McpManager:
                 tools.append({
                     "name": tool.name,
                     "description": tool.description or "",
-                    "input_schema": tool.inputSchema if hasattr(tool, "inputSchema") else {},
+                    # See stdio connect above — mcp>=2.0 renamed this field.
+                    "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
                 })
 
             self._sessions[server_id] = session
