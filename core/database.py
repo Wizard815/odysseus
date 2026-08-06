@@ -221,6 +221,10 @@ class Session(TimestampMixin, Base):
     total_output_tokens = Column(Integer, default=0)
     mode = Column(String, nullable=True)  # 'agent', 'chat', or 'research'
     crew_member_id = Column(String, nullable=True)  # links to crew_members.id
+    # JSON array of McpServer.id strings whose tools are hidden for THIS chat
+    # only (per-chat "Connectors" toggle) -- separate from McpServer.is_enabled,
+    # which is the global admin-configured switch affecting every chat.
+    mcp_disabled_server_ids = Column(Text, nullable=True)
 
     # Relationship to chat messages
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
@@ -1173,6 +1177,29 @@ def _migrate_add_mode_column():
         except Exception:
             pass
 
+def _migrate_add_mcp_disabled_server_ids_column():
+    """Add mcp_disabled_server_ids column to sessions table if it doesn't exist."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(sessions)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "mcp_disabled_server_ids" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN mcp_disabled_server_ids TEXT")
+            conn.commit()
+            logging.getLogger(__name__).info("Migrated: added 'mcp_disabled_server_ids' column to sessions")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Migration check for mcp_disabled_server_ids failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 def _migrate_add_folder_column():
     """Add folder column to sessions table if it doesn't exist."""
     import sqlite3
@@ -1955,6 +1982,7 @@ def init_db():
     _migrate_add_folder_column()
     _migrate_add_token_columns()
     _migrate_add_mode_column()
+    _migrate_add_mcp_disabled_server_ids_column()
     _migrate_add_multiuser_owner_columns()
     _migrate_add_gallery_caption_column()
     _migrate_add_api_token_scopes_column()
@@ -2527,6 +2555,24 @@ def set_session_mode(session_id: str, mode: str) -> bool:
         return True
     except Exception:
         logger.warning("Failed to persist mode %r for session %s", mode, session_id)
+        return False
+
+def set_session_mcp_disabled_servers(session_id: str, server_ids: list) -> bool:
+    """Persist which MCP servers are hidden for THIS chat only (per-chat
+    "Connectors" toggle). Best-effort: never raises, returns success.
+
+    server_ids: list of McpServer.id strings to disable for this session;
+    pass an empty list to clear (re-enable everything for this chat)."""
+    import json
+    try:
+        payload = json.dumps(list(server_ids or []))
+        with get_db_session() as db:
+            db.query(Session).filter(Session.id == session_id).update(
+                {"mcp_disabled_server_ids": payload}
+            )
+        return True
+    except Exception:
+        logger.warning("Failed to persist mcp_disabled_server_ids for session %s", session_id)
         return False
 
 def get_session_by_id(session_id: str):

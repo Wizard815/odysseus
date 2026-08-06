@@ -1685,6 +1685,26 @@ def setup_chat_routes(
                         _max_rounds = _DEFAULT_ROUNDS
                     _max_rounds = max(1, min(_max_rounds, 200))
 
+                    # Per-chat Connectors toggle: read directly from the DB rather
+                    # than the in-memory `sess` wrapper, which is a curated object
+                    # that doesn't necessarily mirror every Session column. Query
+                    # the raw column value (not the ORM row) — get_db_session()
+                    # commits unconditionally on exit, and with the sessionmaker's
+                    # default expire_on_commit=True that detaches any returned ORM
+                    # object, so any attribute access after the `with` block raises
+                    # DetachedInstanceError.
+                    _session_mcp_disabled_ids = None
+                    try:
+                        from core.database import get_db_session as _get_db_session, Session as _DbSession
+                        with _get_db_session() as _db:
+                            _raw = _db.query(_DbSession.mcp_disabled_server_ids).filter(
+                                _DbSession.id == session
+                            ).scalar()
+                        if _raw:
+                            _session_mcp_disabled_ids = set(json.loads(_raw))
+                    except Exception:
+                        logger.debug("Per-chat MCP toggle lookup failed for session %s", session, exc_info=True)
+
                     _forced_tools = None
                     if _search_enabled:
                         _forced_tools = set(WEB_TOOL_NAMES)
@@ -1716,6 +1736,7 @@ def setup_chat_routes(
                         workspace=workspace or None,
                         forced_tools=_forced_tools,
                         uploaded_files=ctx.uploaded_files,
+                        session_mcp_disabled_server_ids=_session_mcp_disabled_ids,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:
