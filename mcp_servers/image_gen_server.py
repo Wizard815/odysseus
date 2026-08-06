@@ -10,6 +10,7 @@ import sys
 import uuid
 from pathlib import Path
 
+from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -21,13 +22,12 @@ from src.constants import GENERATED_IMAGES_DIR
 server = Server("image_gen")
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
+async def list_tools(ctx, params) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=[
         Tool(
             name="generate_image",
             description="Generate an image using an image-capable model (e.g. gpt-image-1)",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "Image description prompt"},
@@ -38,10 +38,9 @@ async def list_tools() -> list[Tool]:
                 "required": ["prompt"],
             },
         )
-    ]
+    ])
 
 
-@server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name != "generate_image":
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -173,6 +172,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {e}")]
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
+
+
+async def _call_tool_handler(ctx, params) -> types.CallToolResult:
+    content = await call_tool(params.name, params.arguments or {})
+    return types.CallToolResult(content=content)
+
+
+server.add_request_handler("tools/list", types.PaginatedRequestParams, list_tools)
+server.add_request_handler("tools/call", types.CallToolRequestParams, _call_tool_handler)
 
 
 async def run():

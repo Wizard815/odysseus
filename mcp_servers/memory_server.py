@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -94,13 +95,12 @@ def _ensure_init():
         _memory_vector = None
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
+async def list_tools(ctx, params) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=[
         Tool(
             name="manage_memory",
             description="Manage the user's memory system: list, add, edit, delete, or search memories.",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "action": {
@@ -119,10 +119,9 @@ async def list_tools() -> list[Tool]:
                 "required": ["action"],
             },
         )
-    ]
+    ])
 
 
-@server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name != "manage_memory":
         return _text_result(f"Unknown tool: {name}")
@@ -256,6 +255,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     else:
         return _text_result(f"Error: Unknown action '{action}'. Use: list, add, edit, delete, search")
+
+
+async def _call_tool_handler(ctx, params) -> types.CallToolResult:
+    content = await call_tool(params.name, params.arguments or {})
+    return types.CallToolResult(content=content)
+
+
+server.add_request_handler("tools/list", types.PaginatedRequestParams, list_tools)
+server.add_request_handler("tools/call", types.CallToolRequestParams, _call_tool_handler)
 
 
 async def run():

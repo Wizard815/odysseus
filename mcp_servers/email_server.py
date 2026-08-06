@@ -26,6 +26,7 @@ import uuid
 from contextvars import ContextVar
 from urllib.parse import parse_qs, unquote, urlparse
 
+from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -2093,8 +2094,7 @@ def _download_attachment(uid, index, folder="INBOX", account=None):
 # ── MCP Tool Registration ──
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
+async def list_tools(ctx, params) -> types.ListToolsResult:
     # The user may have multiple IMAP accounts configured. Every tool accepts an
     # optional `account` param — match by name (e.g. "work"), email address,
     # or account id. Leave it out to use the default account.
@@ -2105,7 +2105,7 @@ async def list_tools() -> list[Tool]:
                            "Omit to use the default account. Use list_email_accounts to discover available accounts.",
         },
     }
-    return [
+    return types.ListToolsResult(tools=[
         Tool(
             name="list_email_accounts",
             description=(
@@ -2113,7 +2113,7 @@ async def list_tools() -> list[Tool]:
                 "name, email address, and whether it's the default. Use this first when "
                 "the user asks about a specific inbox by name (e.g. 'check work')."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         Tool(
             name="list_emails",
@@ -2123,7 +2123,7 @@ async def list_tools() -> list[Tool]:
                 "Use this to check what emails need attention. "
                 "Pass `account` to scan a non-default mailbox."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "folder": {
@@ -2160,7 +2160,7 @@ async def list_tools() -> list[Tool]:
                 "methods, use unsubscribe_email after user approval. For web URL methods, use "
                 "browser/web tools after user approval to open the exact URL and complete the page."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "folder": {"type": "string", "description": "IMAP folder to scan", "default": "INBOX"},
@@ -2178,7 +2178,7 @@ async def list_tools() -> list[Tool]:
                 "List-Unsubscribe directly. If the selected method is a web URL, this returns "
                 "requires_browser with the exact URL; use browser/web tools only after user approval."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string", "description": "Email UID from scan_email_unsubscribes/list_emails"},
@@ -2198,7 +2198,7 @@ async def list_tools() -> list[Tool]:
                 "Use this when you need to review a document, spreadsheet, or other "
                 "file attached to an email."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string", "description": "Email UID from list_emails"},
@@ -2218,7 +2218,7 @@ async def list_tools() -> list[Tool]:
                 "For replying to an existing thread, use reply_to_email instead. "
                 "Pass `account` to send from a non-default mailbox."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "to": {"type": "string", "description": "Recipient email address(es), comma-separated"},
@@ -2240,7 +2240,7 @@ async def list_tools() -> list[Tool]:
                 "can edit or press Send in Odysseus. "
                 f"{_writing_style_guidance()}"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "to": {"type": "string", "description": "Recipient email address(es), comma-separated"},
@@ -2266,7 +2266,7 @@ async def list_tools() -> list[Tool]:
                 "the original To/Cc recipients. For follow-up 'reply ...' requests, use "
                 "the exact UID from the latest list_emails/read_email result; never invent UID 1."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string", "description": "Exact Email UID from list_emails/read_email; never invent UID 1"},
@@ -2287,7 +2287,7 @@ async def list_tools() -> list[Tool]:
                 "the user can review and send from the normal email composer. "
                 f"{_writing_style_guidance()}"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string", "description": "Exact Email UID from list_emails/read_email; never invent UID 1"},
@@ -2309,7 +2309,7 @@ async def list_tools() -> list[Tool]:
                 "to the mailbox Drafts folder. Use this when the user asks you to "
                 "write or draft a reply to an email without dictating the exact body."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string", "description": "Exact Email UID from list_emails/read_email; never invent UID 1"},
@@ -2324,7 +2324,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="archive_email",
             description="Move an email out of the inbox into the Archive folder. Use after handling an email you want to keep but no longer need in the inbox.",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string", "description": "Email UID from list_emails"},
@@ -2337,7 +2337,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="delete_email",
             description="Delete an email. By default moves it to the Trash folder; pass permanent=true to expunge immediately.",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string", "description": "Email UID from list_emails"},
@@ -2351,7 +2351,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mark_email_read",
             description="Mark an email as read (\\Seen flag) or unread (read=false).",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string", "description": "Email UID"},
@@ -2371,7 +2371,7 @@ async def list_tools() -> list[Tool]:
                 "(operates on every unread message in the folder). Far better than "
                 "calling mark_email_read / archive_email once per message."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "action": {
@@ -2406,7 +2406,7 @@ async def list_tools() -> list[Tool]:
                 "'invoice from EY', 'last email about the property'. Returns matching "
                 "emails with their UIDs so you can read_email or reply_to_email."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "query": {
@@ -2435,7 +2435,7 @@ async def list_tools() -> list[Tool]:
                 "Provide either the UID (from list_emails) or a Message-ID. "
                 "Returns the subject, sender, date, and full body text."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "uid": {
@@ -2456,10 +2456,9 @@ async def list_tools() -> list[Tool]:
                 "required": [],
             },
         ),
-    ]
+    ])
 
 
-@server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     arguments = dict(arguments) if isinstance(arguments, dict) else {}
     owner = str(arguments.pop(_MCP_OWNER_ARG, "") or "").strip()
@@ -2905,6 +2904,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {e}")]
     finally:
         _CURRENT_OWNER.reset(owner_token)
+
+
+async def _call_tool_handler(ctx, params) -> types.CallToolResult:
+    content = await call_tool(params.name, params.arguments or {})
+    return types.CallToolResult(content=content)
+
+
+server.add_request_handler("tools/list", types.PaginatedRequestParams, list_tools)
+server.add_request_handler("tools/call", types.CallToolRequestParams, _call_tool_handler)
 
 
 # ── Main ──

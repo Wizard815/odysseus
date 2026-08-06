@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 
+from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -43,13 +44,12 @@ def _ensure_init():
         pass
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
+async def list_tools(ctx, params) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=[
         Tool(
             name="manage_rag",
             description="Manage RAG indexed documents. List indexed files, add directories, or remove directories.",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "action": {
@@ -62,10 +62,9 @@ async def list_tools() -> list[Tool]:
                 "required": ["action"],
             },
         )
-    ]
+    ])
 
 
-@server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name != "manage_rag":
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -149,6 +148,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     else:
         return [TextContent(type="text", text=f"Error: Unknown action '{action}'. Use: list, add_directory, remove_directory")]
+
+
+async def _call_tool_handler(ctx, params) -> types.CallToolResult:
+    content = await call_tool(params.name, params.arguments or {})
+    return types.CallToolResult(content=content)
+
+
+server.add_request_handler("tools/list", types.PaginatedRequestParams, list_tools)
+server.add_request_handler("tools/call", types.CallToolRequestParams, _call_tool_handler)
 
 
 async def run():
