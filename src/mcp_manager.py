@@ -338,6 +338,12 @@ class McpManager:
         if task in done:
             try:
                 return task.result()
+            except BaseExceptionGroup as e:
+                # See the matching handler in _connect_http — belt-and-suspenders
+                # in case a future change makes _connect_http's own try/except
+                # miss one of these again.
+                self._connections[server_id] = {"status": "error", "error": str(e.exceptions[0]) if e.exceptions else str(e), "name": name}
+                return False
             except Exception as e:
                 self._connections[server_id] = {"status": "error", "error": str(e), "name": name}
                 return False
@@ -432,6 +438,18 @@ class McpManager:
         except ImportError as e:
             logger.warning("MCP import failed (%s). If 'mcp' is installed, this is likely an API mismatch, not a missing package.", e)
             self._connections[server_id] = {"status": "error", "error": f"mcp import failed: {e}", "name": name}
+            return False
+        except BaseExceptionGroup as e:
+            # anyio's TaskGroup wraps a failure during the streamable_http_client
+            # async-with setup (e.g. an OAuth registration 401 mid-connect) together
+            # with a GeneratorExit raised while unwinding, and GeneratorExit is a
+            # bare BaseException — so the resulting group is a BaseExceptionGroup,
+            # which a plain `except Exception` does not catch. Observed in
+            # production: this escaped all the way past connect_server() and
+            # call_tool()'s callers with nothing left to catch it, killing the
+            # in-flight SSE chat stream instead of just failing this one connect.
+            logger.error(f"Failed to connect HTTP MCP server {name} ({server_id}) (exception group): {e.exceptions}", exc_info=True)
+            self._connections[server_id] = {"status": "error", "error": str(e.exceptions[0]) if e.exceptions else str(e), "name": name}
             return False
         except Exception as e:
             logger.error(f"Failed to connect HTTP MCP server {name} ({server_id}): {e}", exc_info=True)
@@ -532,6 +550,13 @@ class McpManager:
 
         try:
             result = await self._do_call(session, tool_name, arguments)
+        except BaseExceptionGroup as e:
+            # Same anyio TaskGroup/GeneratorExit gap as the HTTP connect path
+            # (see _connect_http) — a live call can hit it too if the
+            # connection drops or the server errors mid-request. Treat it
+            # like any other failed call instead of letting it escape.
+            logger.error(f"MCP tool call failed (exception group): {qualified_name}: {e.exceptions}")
+            return {"error": str(e.exceptions[0]) if e.exceptions else str(e), "exit_code": 1}
         except Exception as e:
             # Auto-reconnect for builtin servers whose subprocess may have died
             if self.is_builtin(server_id):

@@ -4676,6 +4676,26 @@ async def stream_agent_loop(
                             progress_cb=_push_progress,
                             workspace=workspace,
                         )
+                    except asyncio.CancelledError:
+                        raise
+                    except BaseException as e:
+                        # Last-resort net: nothing below this point (an MCP
+                        # server dying mid-call, an anyio TaskGroup raising a
+                        # BaseExceptionGroup a caller upstream didn't widen
+                        # its except for, any other tool-implementation bug)
+                        # should ever be allowed to propagate out of here —
+                        # `await _tool_task` below is inside the SSE
+                        # generator, so an uncaught exception here doesn't
+                        # just fail this one tool call, it kills the whole
+                        # chat stream mid-response. Degrade to a normal
+                        # failed-tool result instead.
+                        logger.error(
+                            "Tool '%s' crashed unexpectedly: %s", block.tool_type, e, exc_info=True,
+                        )
+                        return (
+                            f"{block.tool_type}: CRASHED",
+                            {"error": f"Tool crashed unexpectedly: {e}", "exit_code": 1},
+                        )
                     finally:
                         # Sentinel so the drainer knows to stop.
                         await _progress_q.put(None)
