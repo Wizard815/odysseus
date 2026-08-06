@@ -215,7 +215,26 @@ def _validate_mcp_command(command, args, env) -> Optional[str]:
     return None
 
 
-async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
+def _session_mcp_disabled_ids(session_id: Optional[str]) -> set:
+    """Which McpServer.id's are hidden for THIS chat only (per-chat Connectors
+    toggle). Returns empty set on any error/missing value -- best-effort,
+    never raises, so a lookup failure just falls back to "nothing disabled"
+    rather than breaking the tool call."""
+    if not session_id:
+        return set()
+    try:
+        import json as _json
+        from core.database import get_db_session, Session as _DbSession
+        with get_db_session() as db:
+            raw = db.query(_DbSession.mcp_disabled_server_ids).filter(
+                _DbSession.id == session_id
+            ).scalar()
+        return set(_json.loads(raw)) if raw else set()
+    except Exception:
+        return set()
+
+
+async def do_manage_mcp(content: str, owner: Optional[str] = None, session_id: Optional[str] = None) -> Dict:
     """Manage MCP servers: list, add, delete, enable, disable, reconnect."""
     try:
         args = _parse_tool_args(content)
@@ -360,6 +379,18 @@ async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
         sid = args.get("server_id", "")
         query = str(args.get("query", "") or "").strip().lower()
         tools = mcp.get_all_tools()
+        # Per-chat Connectors toggle: never claim a tool is "available" here
+        # if it's hidden for this session -- get_all_openai_schemas() (which
+        # actually builds what's callable) already excludes it via
+        # _mcp_disabled_map, so reporting it here as available/unlocked would
+        # tell the model it can call something it structurally can't, and the
+        # self-heal block that unions this response's "call" names into
+        # _relevant_tools would try to "unlock" a tool that was never really
+        # there -- exactly the prompt/schema mismatch this file's list_tools
+        # docstring already warns against for the discovery flow generally.
+        _hidden = _session_mcp_disabled_ids(session_id)
+        if _hidden:
+            tools = [t for t in tools if t.get("server_id") not in _hidden]
         if sid:
             tools = [t for t in tools if t.get("server_id") == sid]
         if query:
@@ -826,9 +857,18 @@ def _owner_adapter(fn):
     return _execute
 
 
+def _owner_session_adapter(fn):
+    """Like _owner_adapter, but also forwards session_id -- for handlers
+    (currently just manage_mcp) that need per-chat-scoped state, not just
+    per-owner state."""
+    async def _execute(content: str, ctx: dict) -> dict:
+        return await fn(content, ctx.get("owner"), ctx.get("session_id"))
+    return _execute
+
+
 ADMIN_TOOL_HANDLERS = {
     "manage_endpoints": _owner_adapter(do_manage_endpoints),
-    "manage_mcp": _owner_adapter(do_manage_mcp),
+    "manage_mcp": _owner_session_adapter(do_manage_mcp),
     "manage_webhooks": _owner_adapter(do_manage_webhooks),
     "manage_tokens": _owner_adapter(do_manage_tokens),
     "manage_settings": _owner_adapter(do_manage_settings),

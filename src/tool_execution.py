@@ -804,9 +804,13 @@ async def _execute_tool_block_impl(
         desc = f"api_call: {first_line}"
         result = await do_api_call(content)
     elif tool in ("manage_endpoints", "manage_mcp", "manage_webhooks", "manage_tokens", "manage_settings"):
-        # Registry-dispatched (agent_tools.admin_tools); owner threaded for ownership/admin checks.
+        # Registry-dispatched (agent_tools.admin_tools); owner threaded for
+        # ownership/admin checks. session_id also threaded through -- manage_mcp
+        # specifically needs it to respect the per-chat Connectors toggle
+        # (see _owner_session_adapter / _session_mcp_disabled_ids in
+        # admin_tools.py); the other four handlers here ignore it.
         desc = tool
-        result = await _direct_fallback(tool, content, owner=owner) \
+        result = await _direct_fallback(tool, content, session_id=session_id, owner=owner) \
             or {"error": f"{tool}: execution failed", "exit_code": 1}
     elif tool == "manage_notes":
         desc = "manage_notes"
