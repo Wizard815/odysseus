@@ -236,6 +236,7 @@ class Session(TimestampMixin, Base):
     
     def to_dict(self):
         """Convert session to dictionary for JSON serialization"""
+        import json
         return {
             'id': self.id,
             'name': self.name,
@@ -253,6 +254,10 @@ class Session(TimestampMixin, Base):
             'total_input_tokens': self.total_input_tokens or 0,
             'total_output_tokens': self.total_output_tokens or 0,
             'crew_member_id': self.crew_member_id,
+            'mcp_disabled_server_ids': (
+                json.loads(self.mcp_disabled_server_ids)
+                if self.mcp_disabled_server_ids else []
+            ),
         }
 
 class ChatMessage(Base):

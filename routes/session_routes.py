@@ -458,6 +458,23 @@ def setup_session_routes(
             rag=str(rag).lower() == "true" if rag else False,
             archived=False
         )    
+    @router.get("/session/{sid}/mcp-toggle")
+    def get_session_mcp_toggle(request: Request, sid: str):
+        """Current per-chat Connectors state for this session -- which
+        McpServer.id's are hidden for THIS chat only. Small dedicated read so
+        the composer's Connectors picker doesn't need to fetch/filter the
+        full session list just to know current toggle state."""
+        _verify_session_owner(request, sid)
+        db = SessionLocal()
+        try:
+            db_session = db.query(DbSession).filter(DbSession.id == sid).first()
+            if not db_session:
+                raise HTTPException(404, f"Session {sid} not found")
+            ids = json.loads(db_session.mcp_disabled_server_ids) if db_session.mcp_disabled_server_ids else []
+            return {"id": sid, "mcp_disabled_server_ids": ids}
+        finally:
+            db.close()
+
     @router.patch("/session/{sid}")
     def rename_session(
         request: Request, sid: str,
