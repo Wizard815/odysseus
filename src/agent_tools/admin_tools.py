@@ -373,6 +373,33 @@ async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
                 or query in t["server_name"].lower()
                 or query in (t.get("description") or "").lower()
             ]
+        # An unscoped listing across many connected servers can be large enough
+        # to hit format_tool_result's 8000-char truncation cap — the model then
+        # sees a generic "(truncated, N chars total)" marker with no way to
+        # recover, and (observed in practice) just re-calls the identical
+        # unscoped list_tools instead of narrowing, burning rounds until the
+        # loop-breaker kills it. Once a query/server_id already narrows things,
+        # return the real per-tool listing as before; otherwise, when there's
+        # enough to plausibly overflow, return a compact per-server summary
+        # with an explicit next step instead of a wall of JSON.
+        if not sid and not query and len(tools) > 15:
+            by_server: dict[str, int] = {}
+            for t in tools:
+                by_server[t["server_name"]] = by_server.get(t["server_name"], 0) + 1
+            servers = [{"server": name, "server_id": next(
+                            (t["server_id"] for t in tools if t["server_name"] == name), ""),
+                        "tool_count": count} for name, count in by_server.items()]
+            return {
+                "response": (
+                    f"{len(tools)} MCP tools across {len(servers)} server(s). "
+                    "Too many to list individually here — call list_tools again "
+                    "with a `server_id` (from the list below) or a `query` "
+                    "describing what you need to see the actual tool names."
+                ),
+                "servers": servers,
+                "exit_code": 0,
+            }
+
         items = [{"name": t["name"], "server": t["server_name"],
                   "call": t["qualified_name"],
                   "description": t.get("description", "")} for t in tools]
