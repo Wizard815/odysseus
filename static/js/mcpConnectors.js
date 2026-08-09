@@ -10,7 +10,7 @@
 // that's open when you toggle it.
 
 import uiModule from './ui.js';
-import { getCurrentSessionId } from './sessions.js';
+import { getCurrentSessionId, hasPendingChat } from './sessions.js';
 import { makeWindowDraggable } from './windowDrag.js';
 
 const API = window.location.origin;
@@ -18,6 +18,30 @@ let _modal = null;
 let _servers = [];         // [{id, name, status, tool_count}]
 let _disabled = new Set(); // server ids hidden for the current session
 let _loadedForSid = null;  // which session the above was fetched for
+// Chosen BEFORE a real session exists yet, while a "New Chat" is pending
+// (no session_id until the first message is sent — see sessions.js
+// createDirectChat/materializePendingSession). Applied to the session at
+// creation time instead of requiring a PATCH afterward.
+let _pendingDisabled = new Set();
+
+/** Read by sessions.js materializePendingSession() when it finally POSTs
+ * /api/session, so a chat started with connectors already turned off never
+ * sends those servers' tool schemas in its very first prompt. */
+export function getPendingMcpDisabledServerIds() {
+  return Array.from(_pendingDisabled);
+}
+
+/** Called by sessions.js whenever a fresh "New Chat" is started, so a
+ * previous pending chat's choices don't leak into the next one. */
+export function clearPendingMcpDisabledServerIds() {
+  _pendingDisabled = new Set();
+}
+
+// Cross-module access without a circular import (sessions.js needs the two
+// functions above; mcpConnectors.js already imports FROM sessions.js).
+// Mirrors the existing window.chatModule/window.documentModule pattern used
+// elsewhere in this codebase for the same reason.
+window.mcpConnectorsModule = { getPendingMcpDisabledServerIds, clearPendingMcpDisabledServerIds };
 
 function _escapeHtml(s) {
   const d = document.createElement('div');
@@ -75,8 +99,21 @@ function _row(server) {
 async function _onToggle(serverId, inputEl) {
   const sid = getCurrentSessionId();
   if (!sid) {
-    inputEl.checked = !inputEl.checked; // revert, nothing to persist against
-    if (uiModule && uiModule.showToast) uiModule.showToast('Send a message first to create this chat, then set connectors');
+    // No real session row yet. If a "New Chat" is pending (the normal case
+    // right after clicking New Chat, before the first message is sent),
+    // remember the choice locally -- materializePendingSession() applies it
+    // when the session is actually created, so it's already in effect
+    // before the first prompt is built. Only block entirely when there's no
+    // chat context at all to attach the preference to.
+    if (!hasPendingChat()) {
+      inputEl.checked = !inputEl.checked; // revert, nothing to persist against
+      if (uiModule && uiModule.showToast) uiModule.showToast('Start a new chat first to set connectors');
+      return;
+    }
+    if (inputEl.checked) _pendingDisabled.delete(serverId);
+    else _pendingDisabled.add(serverId);
+    _disabled = new Set(_pendingDisabled);
+    _syncIndicator();
     return;
   }
   const wasDisabled = _disabled.has(serverId);
@@ -131,7 +168,7 @@ function _getModal() {
         <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Connectors for this chat</h4>
         <button class="close-btn" id="mcp-connectors-close" aria-label="Close">✖</button>
       </div>
-      <p class="muted" style="margin:0 0 8px;font-size:12px;">Turn a server off for just this conversation. Doesn't affect other chats, and doesn't change the global enable/disable in Settings → Integrations.</p>
+      <p class="muted" style="margin:0 0 8px;font-size:12px;">Turn a server off for just this conversation. Works before you send the first message too, so unneeded tools never enter the prompt. Doesn't affect other chats, and doesn't change the global enable/disable in Settings → Integrations.</p>
       <div class="modal-body" id="mcp-connectors-body"></div>
     </div>`;
   document.body.appendChild(_modal);
@@ -155,6 +192,8 @@ export async function openConnectorsPicker() {
     if (sid) {
       const toggleState = await results[1].json();
       _disabled = new Set(toggleState.mcp_disabled_server_ids || []);
+    } else if (hasPendingChat()) {
+      _disabled = new Set(_pendingDisabled);
     } else {
       _disabled = new Set();
     }

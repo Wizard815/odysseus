@@ -337,6 +337,7 @@ def setup_session_routes(
         skip_validation: str = Form(None),
         api_key: str = Form(""),
         endpoint_id: str = Form(""),
+        mcp_disabled_server_ids: str = Form(None),
     ):
         skip_val = str(skip_validation).lower() == "true"
         user = effective_user(request)
@@ -443,6 +444,20 @@ def setup_session_routes(
             from src.endpoint_resolver import build_headers
             session.headers = build_headers(resolved_key, resolved_base)
             _persist_session_headers(sid, session.headers)
+        # Per-chat Connectors toggle chosen BEFORE the first message (the
+        # composer's "Connectors" picker now works against the pending
+        # client-side chat, not just an already-created session — see
+        # static/js/mcpConnectors.js / sessions.js materializePendingSession).
+        # Same validation/behavior as the PATCH /session/{sid} path below.
+        if mcp_disabled_server_ids is not None:
+            try:
+                ids = json.loads(mcp_disabled_server_ids)
+                if not isinstance(ids, list):
+                    raise ValueError("mcp_disabled_server_ids must be a JSON array")
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(400, f"Invalid mcp_disabled_server_ids: {e}")
+            from core.database import set_session_mcp_disabled_servers
+            set_session_mcp_disabled_servers(sid, ids)
         # Fire webhook (sync-safe)
         if webhook_manager:
             webhook_manager.fire_and_forget("session.created", {

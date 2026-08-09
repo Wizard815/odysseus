@@ -2199,6 +2199,10 @@ export function createDirectChat(url, modelId, endpointId, opts = {}) {
   // Don't hit the API — just store the model info and prepare the UI
   _pendingChat = { url, modelId, endpointId, source: incomingSource };
   _pendingMaterializePromise = null;
+  // A previous pending chat's Connectors choices must not leak into this
+  // new one — each new chat starts with everything enabled unless the user
+  // explicitly turns something off for it.
+  try { window.mcpConnectorsModule?.clearPendingMcpDisabledServerIds?.(); } catch (_) {}
   _skipAutoSelect = true;
   _suppressNextSessionLoading = true;
   currentSessionId = null;
@@ -2270,6 +2274,15 @@ export async function materializePendingSession() {
     if (pending.endpointId) {
       fd.append('endpoint_id', pending.endpointId);
     }
+    // Connectors chosen while this chat was still pending (before the first
+    // message) -- apply them at creation time so the very first prompt
+    // already excludes those servers' tools instead of only taking effect
+    // on a later PATCH.
+    let _pendingMcpDisabled = [];
+    try { _pendingMcpDisabled = window.mcpConnectorsModule?.getPendingMcpDisabledServerIds?.() || []; } catch (_) {}
+    if (_pendingMcpDisabled.length) {
+      fd.append('mcp_disabled_server_ids', JSON.stringify(_pendingMcpDisabled));
+    }
 
     let res;
     try {
@@ -2311,6 +2324,10 @@ export async function materializePendingSession() {
     }
     _pendingChat = null;
     currentSessionId = payload.id;
+    // Already persisted server-side via mcp_disabled_server_ids on the
+    // create call above -- clear the pending-scoped copy so it can't leak
+    // into whatever chat gets created next.
+    try { window.mcpConnectorsModule?.clearPendingMcpDisabledServerIds?.(); } catch (_) {}
     if (!isIncognito) {
       Storage.set('lastSessionId', payload.id);
     }
