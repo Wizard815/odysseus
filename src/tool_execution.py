@@ -544,6 +544,7 @@ async def _direct_fallback(
             return await TOOL_HANDLERS[tool](content, ctx)
 
     except Exception as e:
+        logger.error(f"Builtin tool handler failed: {tool}: {e}", exc_info=True)
         return {"error": f"{tool}: {e}", "exit_code": 1}
 
     return None

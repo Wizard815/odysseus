@@ -1256,7 +1256,7 @@ class TaskScheduler:
             # Bubble up so _execute_task_locked can drop the run row silently.
             raise
         except Exception as e:
-            logger.error(f"Action '{task.action}' failed: {e}")
+            logger.error(f"Action '{task.action}' failed: {e}", exc_info=True)
             return str(e), False
 
     # ── Check-in source discovery ──
@@ -1637,7 +1637,7 @@ class TaskScheduler:
                 datetime_context_msg=_dt_msg,
             )
         except Exception as e:
-            logger.warning(f"Agent loop failed for task '{task.name}', falling back to simple call: {e}")
+            logger.warning(f"Agent loop failed for task '{task.name}', falling back to simple call: {e}", exc_info=True)
             from src.task_endpoint import task_llm_call_async
             messages: list = [{"role": "system", "content": system_prompt}]
             if _dt_msg:
@@ -2211,7 +2211,7 @@ class TaskScheduler:
                     f"(recipient_set={bool(recipient)}, body={body_len}b, reply={stdout[:200]!r})"
                 )
         except Exception as e:
-            logger.error(f"Task {task.id} MCP delivery failed: {e}")
+            logger.error(f"Task {task.id} MCP delivery failed: {e}", exc_info=True)
 
     async def run_task_now(self, task_id: str, *, force: bool = False):
         """Manually trigger a task execution."""

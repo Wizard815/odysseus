@@ -435,7 +435,7 @@ class WebhookManager:
             })
             db.commit()
         except Exception as e:
-            logger.warning(f"Webhook delivery failed for {webhook_id}")
+            logger.warning(f"Webhook delivery failed for {webhook_id}: {e}", exc_info=True)
             try:
                 db.query(Webhook).filter(Webhook.id == webhook_id).update({
                     "last_triggered_at": _utcnow(),

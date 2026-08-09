@@ -425,7 +425,7 @@ class ChatProcessor:
                         logger.warning("LLM generated an empty search query, using fallback.")
                 except Exception as e:
                     # LLM failed (exception/error) -> fall back to original user query
-                    logger.warning(f"Failed to generate search query via LLM, using fallback: {e}")
+                    logger.warning(f"Failed to generate search query via LLM, using fallback: {e}", exc_info=True)
 
                 search_query = " ".join(search_query.split())
                 if len(search_query) > 150:
@@ -445,7 +445,7 @@ class ChatProcessor:
                     )
                     preface.append(untrusted_context_message("web search results", web_context))
             except Exception as e:
-                logger.error(f"Web search failed: {e}")
+                logger.error(f"Web search failed: {e}", exc_info=True)
                 preface.append({"role": "system", "content": "Web search encountered an error and could not retrieve results."})
 
         # Process non-YouTube URLs in message (YouTube handled by preprocess_message)

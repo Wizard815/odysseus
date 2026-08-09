@@ -322,7 +322,7 @@ async def do_pipeline(content: str, session_id: Optional[str] = None, owner: Opt
             "final_output": previous_output,
         }
     except Exception as e:
-        logger.error(f"pipeline failed at step {len(step_outputs) + 1}: {e}")
+        logger.error(f"pipeline failed at step {len(step_outputs) + 1}: {e}", exc_info=True)
         return {"error": f"Pipeline failed at step {len(step_outputs) + 1}: {e}"}
 
 
