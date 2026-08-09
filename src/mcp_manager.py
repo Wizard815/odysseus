@@ -94,6 +94,35 @@ def _format_mcp_params(input_schema: Any) -> str:
     return hint
 
 
+def _resolve_input_schema(tool: Any, server_label: str = "") -> Dict:
+    """Get a tool's input schema, warning (not silently swallowing) when it's empty.
+
+    mcp>=2.0 renamed Tool.inputSchema -> Tool.input_schema; the old
+    hasattr(tool, "inputSchema") check silently returned False for every
+    tool on every server after that upgrade, and every schema fell back to
+    {} for a long time before anyone noticed — a model asked to call a tool
+    with a required param it can't see just guesses blind or gives up. An
+    empty schema is a strong signal something is wrong (a real rename, an
+    unusual server, or a genuinely parameter-less tool), so log it instead
+    of failing quietly the same way again.
+    """
+    schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
+    # Only warn when the schema is missing entirely (both attr names absent) —
+    # a real zero-arg tool legitimately returns {"type": "object",
+    # "properties": {}}, which must NOT trigger this warning on every such
+    # tool on every connect.
+    if not schema:
+        logger.warning(
+            "MCP tool '%s'%s resolved to an empty input schema — the model "
+            "will not see any parameter names for it. If this tool actually "
+            "takes parameters, the mcp package's Tool schema field may have "
+            "been renamed again.",
+            getattr(tool, "name", "?"),
+            f" (server: {server_label})" if server_label else "",
+        )
+    return schema
+
+
 # Tool-name prefixes that denote a read-only/inspection operation. Used to
 # classify MCP tools for plan mode when the server provides no readOnlyHint.
 # These are PREFIXES, not whole words (matched via str.startswith below), so a
@@ -121,8 +150,16 @@ def mcp_tool_is_readonly(tool: Dict) -> bool:
             read_hint = ann.get("readOnlyHint")
             destructive = ann.get("destructiveHint")
         else:
-            read_hint = getattr(ann, "readOnlyHint", None)
-            destructive = getattr(ann, "destructiveHint", None)
+            # Same rename risk as Tool.inputSchema -> input_schema on the
+            # pydantic model's Python attribute name (the dict branch above
+            # is unaffected -- that's deserialized JSON, which stays
+            # camelCase per the MCP wire spec regardless of SDK attr naming).
+            read_hint = getattr(ann, "read_only_hint", None)
+            if read_hint is None:
+                read_hint = getattr(ann, "readOnlyHint", None)
+            destructive = getattr(ann, "destructive_hint", None)
+            if destructive is None:
+                destructive = getattr(ann, "destructiveHint", None)
     if read_hint is True:
         return True
     if read_hint is False or destructive is True:
@@ -148,6 +185,37 @@ class McpManager:
         self._connect_tasks: Dict[str, Any] = {}
         # Tracking updates to tools/connections for RAG indexing / prompt cache
         self._generation = 0
+
+    def _warn_tool_name_collisions(self, server_id: str, new_name: str, tools: List[Dict]) -> None:
+        """Log when a newly-connected server's bare tool names collide with an
+        already-connected server's.
+
+        We can't control what a third-party MCP server names its tools, so
+        this can't be prevented — but it's exactly the failure mode that
+        caused a real incident: an agent silently called BoardNotes'
+        `search`/`delete_item` when it meant Kanka's `find_entities`/
+        `delete_entities`, because both servers expose generic verb-shaped
+        tool names and nothing surfaced the overlap at connect time. Logging
+        it here at least makes the collision visible in server logs the
+        moment it's introduced, instead of only being discovered mid-incident
+        via a model transcript days later.
+        """
+        new_bare_names = {t.get("name") for t in tools if t.get("name")}
+        for other_id, other_tools in self._tools.items():
+            if other_id == server_id:
+                continue
+            other_name = (self._connections.get(other_id, {}) or {}).get("name", other_id)
+            other_bare_names = {t.get("name") for t in other_tools if t.get("name")}
+            collisions = sorted(new_bare_names & other_bare_names)
+            if collisions:
+                logger.warning(
+                    "MCP tool name collision: server '%s' and server '%s' both "
+                    "expose tool name(s) %s. A model choosing by tool name alone "
+                    "(rather than the full mcp__<server_id>__<tool_name>) can call "
+                    "the wrong server's tool. Consider disabling unused tools on "
+                    "one server, or keeping only one of them connected at a time.",
+                    new_name, other_name, collisions,
+                )
 
     async def connect_server(
         self,
@@ -175,7 +243,7 @@ class McpManager:
                 self._generation += 1
             return res
         except Exception as e:
-            logger.error(f"Failed to connect MCP server {name} ({server_id}): {e}")
+            logger.error(f"Failed to connect MCP server {name} ({server_id}): {e}", exc_info=True)
             error_message = _format_mcp_connection_error(name, command or "", args or [], e)
             self._connections[server_id] = {"status": "error", "error": error_message, "name": name}
             self._generation += 1
@@ -210,17 +278,7 @@ class McpManager:
                     tools.append({
                         "name": tool.name,
                         "description": tool.description or "",
-                        # mcp>=2.0 renamed Tool.inputSchema -> Tool.input_schema
-                        # (confirmed via Tool.model_fields). hasattr(tool,
-                        # "inputSchema") silently returned False for every tool
-                        # on the old name, so every tool's schema fell back to
-                        # {} — the model then genuinely never saw any parameter
-                        # names (confirmed by a model verbatim quoting
-                        # "properties": {} back in its own reasoning) and had
-                        # no way to know it needed e.g. search_term. Check both
-                        # names defensively given how many mcp>=2 renames
-                        # we've already hit.
-                        "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                        "input_schema": _resolve_input_schema(tool, name),
                         # MCP tool annotations (readOnlyHint / destructiveHint) drive
                         # plan-mode read-only gating. Absent on many servers, so we
                         # fall back to a name heuristic in mcp_tool_is_readonly().
@@ -240,6 +298,7 @@ class McpManager:
                 self._sessions[server_id] = session
                 self._stacks[server_id] = stack
                 self._tools[server_id] = tools
+                self._warn_tool_name_collisions(server_id, name, tools)
                 self._connections[server_id] = {
                     "status": "connected",
                     "name": name,
@@ -294,8 +353,7 @@ class McpManager:
                     tools.append({
                         "name": tool.name,
                         "description": tool.description or "",
-                        # See stdio connect above — mcp>=2.0 renamed this field.
-                        "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                        "input_schema": _resolve_input_schema(tool, name),
                         # MCP tool annotations (readOnlyHint / destructiveHint) drive
                         # plan-mode read-only gating. Absent on many servers, so we
                         # fall back to a name heuristic in mcp_tool_is_readonly().
@@ -305,6 +363,7 @@ class McpManager:
                 self._sessions[server_id] = session
                 self._stacks[server_id] = stack
                 self._tools[server_id] = tools
+                self._warn_tool_name_collisions(server_id, name, tools)
                 self._connections[server_id] = {
                     "status": "connected",
                     "name": name,
@@ -342,9 +401,11 @@ class McpManager:
                 # See the matching handler in _connect_http — belt-and-suspenders
                 # in case a future change makes _connect_http's own try/except
                 # miss one of these again.
+                logger.error(f"Failed to connect HTTP MCP server {name} ({server_id}) [group]: {e}", exc_info=True)
                 self._connections[server_id] = {"status": "error", "error": str(e.exceptions[0]) if e.exceptions else str(e), "name": name}
                 return False
             except Exception as e:
+                logger.error(f"Failed to connect HTTP MCP server {name} ({server_id}): {e}", exc_info=True)
                 self._connections[server_id] = {"status": "error", "error": str(e), "name": name}
                 return False
         # Still running → awaiting OAuth authorization (only reached when no
@@ -416,13 +477,13 @@ class McpManager:
                 tools.append({
                     "name": tool.name,
                     "description": tool.description or "",
-                    # See stdio connect above — mcp>=2.0 renamed this field.
-                    "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                    "input_schema": _resolve_input_schema(tool, name),
                 })
 
             self._sessions[server_id] = session
             self._stacks[server_id] = stack
             self._tools[server_id] = tools
+            self._warn_tool_name_collisions(server_id, name, tools)
             self._connections[server_id] = {
                 "status": "connected", "name": name, "transport": "http",
                 "tool_count": len(tools),
@@ -474,7 +535,7 @@ class McpManager:
             try:
                 await stack.aclose()
             except Exception as e:
-                logger.warning(f"Error closing MCP server {server_id}: {e}")
+                logger.warning(f"Error closing MCP server {server_id}: {e}", exc_info=True)
 
         self._sessions.pop(server_id, None)
         self._tools.pop(server_id, None)
@@ -555,12 +616,12 @@ class McpManager:
             # (see _connect_http) — a live call can hit it too if the
             # connection drops or the server errors mid-request. Treat it
             # like any other failed call instead of letting it escape.
-            logger.error(f"MCP tool call failed (exception group): {qualified_name}: {e.exceptions}")
+            logger.error(f"MCP tool call failed (exception group): {qualified_name}: {e.exceptions}", exc_info=True)
             return {"error": str(e.exceptions[0]) if e.exceptions else str(e), "exit_code": 1}
         except Exception as e:
             # Auto-reconnect for builtin servers whose subprocess may have died
             if self.is_builtin(server_id):
-                logger.warning(f"MCP call failed for {qualified_name}, attempting reconnect: {e}")
+                logger.warning(f"MCP call failed for {qualified_name}, attempting reconnect: {e}", exc_info=True)
                 reconnected = await self._reconnect_builtin(server_id)
                 if reconnected:
                     session = self._sessions.get(server_id)
@@ -568,7 +629,7 @@ class McpManager:
                         try:
                             result = await self._do_call(session, tool_name, arguments)
                         except Exception as e2:
-                            logger.error(f"MCP tool call failed after reconnect: {qualified_name}: {e2}")
+                            logger.error(f"MCP tool call failed after reconnect: {qualified_name}: {e2}", exc_info=True)
                             return {"error": str(e2), "exit_code": 1}
                     else:
                         return {"error": f"Reconnected but no session for {server_id}", "exit_code": 1}
@@ -576,7 +637,7 @@ class McpManager:
                     logger.error(f"MCP reconnect failed for {server_id}")
                     return {"error": f"MCP server crashed and reconnect failed: {server_id}", "exit_code": 1}
             else:
-                logger.error(f"MCP tool call failed: {qualified_name}: {e}")
+                logger.error(f"MCP tool call failed: {qualified_name}: {e}", exc_info=True)
                 return {"error": str(e), "exit_code": 1}
 
         return result
@@ -591,14 +652,23 @@ class McpManager:
                 output_parts.append(content.text)
             elif getattr(content, 'type', '') == 'image' and hasattr(content, 'data'):
                 # Image content (e.g. Playwright screenshots)
-                mime = getattr(content, 'mimeType', 'image/png')
+                # Same rename risk as Tool.inputSchema -> input_schema: check
+                # both names defensively rather than assume the old one.
+                mime = getattr(content, 'mime_type', None) or getattr(content, 'mimeType', None) or 'image/png'
                 images.append({"data": content.data, "mimeType": mime})
                 output_parts.append(f"[Screenshot captured ({mime})]")
             elif hasattr(content, 'data'):
                 output_parts.append(str(content.data))
 
         output = "\n".join(output_parts)
-        is_error = getattr(result, 'isError', False)
+        # Same rename risk as Tool.inputSchema -> input_schema: if
+        # CallToolResult.isError were renamed to is_error, this would
+        # silently report every failed tool call as a success (exit_code=0),
+        # with the error text landing in stdout instead of stderr. Check
+        # both names defensively.
+        is_error = getattr(result, 'is_error', None)
+        if is_error is None:
+            is_error = getattr(result, 'isError', False)
 
         result_dict = {
             "stdout": output if not is_error else "",
@@ -637,7 +707,7 @@ class McpManager:
                 logger.info(f"Reconnected builtin MCP server: {name}")
             return ok
         except Exception as e:
-            logger.error(f"Failed to reconnect builtin MCP server {name}: {e}")
+            logger.error(f"Failed to reconnect builtin MCP server {name}: {e}", exc_info=True)
             return False
 
     def get_all_openai_schemas(self, disabled_map: Optional[Dict[str, set]] = None) -> List[Dict]:
