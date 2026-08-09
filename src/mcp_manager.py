@@ -637,8 +637,27 @@ class McpManager:
                     logger.error(f"MCP reconnect failed for {server_id}")
                     return {"error": f"MCP server crashed and reconnect failed: {server_id}", "exit_code": 1}
             else:
-                logger.error(f"MCP tool call failed: {qualified_name}: {e}", exc_info=True)
-                return {"error": str(e), "exit_code": 1}
+                # Non-builtin (stdio/SSE/HTTP-configured) servers previously
+                # had no self-healing at all here -- a dead transport
+                # connection ("Connection closed") would fail every
+                # subsequent tool call for the rest of the conversation until
+                # someone manually clicked reconnect. Try once to bring the
+                # connection back up before giving up.
+                logger.warning(f"MCP call failed for {qualified_name}, attempting reconnect: {e}", exc_info=True)
+                reconnected = await self._reconnect_any(server_id)
+                if reconnected:
+                    session = self._sessions.get(server_id)
+                    if session:
+                        try:
+                            result = await self._do_call(session, tool_name, arguments)
+                        except Exception as e2:
+                            logger.error(f"MCP tool call failed after reconnect: {qualified_name}: {e2}", exc_info=True)
+                            return {"error": str(e2), "exit_code": 1}
+                    else:
+                        return {"error": f"Reconnected but no session for {server_id}", "exit_code": 1}
+                else:
+                    logger.error(f"MCP tool call failed and reconnect failed: {qualified_name}: {e}")
+                    return {"error": str(e), "exit_code": 1}
 
         return result
 
@@ -678,6 +697,51 @@ class McpManager:
         if images:
             result_dict["images"] = images
         return result_dict
+
+    async def _reconnect_any(self, server_id: str) -> bool:
+        """Tear down and reconnect ANY configured MCP server (stdio/SSE/HTTP),
+        using its stored config from the database.
+
+        Mirrors routes/mcp_routes.py's manual /servers/{id}/reconnect endpoint.
+        Added because call_tool()'s auto-reconnect-on-failure only covered
+        builtin (stdio, in-process) servers via _reconnect_builtin — a real
+        incident showed a remote HTTP server (Kanka) whose transport
+        connection died mid-conversation ("MCPError: Connection closed") then
+        failed EVERY subsequent tool call for the rest of the session, since
+        nothing ever attempted to bring the connection back up. This is the
+        non-builtin counterpart, so any transport gets the same self-healing
+        behavior on a dead connection instead of requiring a manual reconnect
+        click.
+        """
+        db = SessionLocal()
+        try:
+            srv = db.query(McpServer).filter(McpServer.id == server_id).first()
+            if not srv:
+                return False
+            args = json.loads(srv.args) if srv.args else []
+            env = json.loads(srv.env) if srv.env else {}
+            headers = json.loads(srv.headers) if srv.headers else None
+        finally:
+            db.close()
+
+        await self.disconnect_server(server_id)
+        try:
+            ok = await self.connect_server(
+                server_id=server_id,
+                name=srv.name,
+                transport=srv.transport,
+                command=srv.command,
+                args=args,
+                env=env,
+                url=srv.url,
+                headers=headers,
+            )
+            if ok:
+                logger.info(f"Reconnected MCP server after dead-connection failure: {srv.name}")
+            return ok
+        except Exception as e:
+            logger.error(f"Failed to reconnect MCP server {srv.name}: {e}", exc_info=True)
+            return False
 
     async def _reconnect_builtin(self, server_id: str) -> bool:
         """Tear down and reconnect a crashed builtin MCP server."""
