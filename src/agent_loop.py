@@ -996,6 +996,24 @@ def _extract_last_user_message(messages: List[Dict]) -> str:
     return ""
 
 
+def _extract_last_assistant_message(messages: List[Dict]) -> str:
+    """Return the most recent assistant message as plain text.
+
+    Used alongside `_extract_last_user_message` for the fake-success guard:
+    when a destructive action needs confirmation, the destructive verb
+    ("delete entity 9681969") typically appears in the ASSISTANT's own
+    confirmation-ask turn, not in the user's one-word "yes" reply that
+    triggers this turn. Checking only the last user message misses that.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+            return content
+    return ""
+
+
 def _user_turn_count(messages: List[Dict]) -> int:
     """Count real user turns in the message list."""
     count = 0
@@ -1067,7 +1085,16 @@ _EXPLICIT_WORKSPACE_REFERENCE_RE = re.compile(
 _LOCAL_COMPUTER_REFERENCE_RE = re.compile(
     r"\b(?:on|from|in|using|with)\s+(?:this|my|the)\s+(?:computer|machine|pc|laptop|device|system)\b"
     r"|\b(?:local|host)\s+(?:computer|machine|files?|system)\b"
-    r"|\b(?:on|from)\s+(?!this\b|my\b|the\b|a\b|an\b)(?:[a-z][a-z0-9_.-]{1,31})\b",
+    # Named remote machine, e.g. "run this on mx-llamacpp-ssh" / "check files
+    # on raidlab.local" / "from gpu-node-1". The trailing lookahead requires
+    # the token to actually contain a hyphen/dot/digit (real host/server
+    # names in this environment do) rather than matching ANY bare lowercase
+    # word after on/from — the old version matched ordinary English like
+    # "the entity_id from step 2", misrouting an unrelated MCP request to
+    # the local-machine/Terminus toolset and wiping out its real tool
+    # selection (confirmed root cause of a real incident: zero MCP tools
+    # sent for a Kanka-testing prompt because it said "... from step 2").
+    r"|\b(?:on|from)\s+(?!this\b|my\b|the\b|a\b|an\b)(?=[a-z0-9_.-]*[-.\d])(?:[a-z][a-z0-9_.-]{1,31})\b",
     re.IGNORECASE,
 )
 
@@ -1898,7 +1925,8 @@ def _ody_qwen_terminal_tool_summary(tool_event: dict[str, Any]) -> str:
 
 
 _DESTRUCTIVE_REQUEST_RE = re.compile(
-    r"\b(delete|remove|archive|trash|send|reply|unsubscribe|mark\s+.*read)\b",
+    r"\b(delete|remove|archive|trash|send|reply|unsubscribe|mark\s+.*read"
+    r"|wipe|purge|migrat\w*|permanently)\b",
     re.IGNORECASE,
 )
 
@@ -3963,7 +3991,19 @@ async def stream_agent_loop(
             # instead of Kanka's "search_term"). Apply the same RAG-narrowed
             # filter here that the API branch already uses.
             _last_content = _last_user.lower()
-            _wants_mcp = any(kw in _last_content for kw in _MCP_KEYWORDS)
+            # Keyword check alone only looks at the bare last message, which
+            # misses ongoing MCP-tool conversations where a short follow-up
+            # ("search it to confirm its deleted") contains none of these
+            # words — confirmed real incident: RAG-selected _relevant_tools
+            # correctly included Kanka MCP tools via broader context, but
+            # this gate still zeroed out all_tool_schemas anyway, forcing
+            # the model to fabricate a result with no tool available at all.
+            # Also trust _relevant_tools when it already contains an MCP
+            # tool, since that's a more context-aware signal than this list.
+            _wants_mcp = (
+                any(kw in _last_content for kw in _MCP_KEYWORDS)
+                or any(name.startswith("mcp__") for name in _relevant_tools)
+            )
             if _wants_mcp and mcp_schemas:
                 if _relevant_tools:
                     all_tool_schemas = [
@@ -5233,12 +5273,31 @@ async def stream_agent_loop(
     full_response = strip_tool_blocks(full_response).strip()
     if _ody_qwen_finetune_model:
         full_response = _normalize_ody_qwen_text_artifacts(full_response)
-        if (
-            not tool_events
-            and _looks_like_destructive_request(_last_user)
-            and _looks_like_success_claim(full_response)
-        ):
-            full_response = "I couldn't make that change because no matching tool action completed."
+    # Fake-success guard: catches a model claiming a destructive action
+    # ("Done. Entity deleted.") when this turn made zero real tool calls.
+    # Originally gated to the in-house odysseus-qwen3 finetune only, but the
+    # same failure mode was observed on a plain local Qwen3.6 GGUF (agent
+    # answered "Done, deleted" twice in a row with no tool_calls at all,
+    # confirmed by the user catching it and a follow-up manual verification
+    # showing the entity still existed) — applies to any model, not just the
+    # finetune, so no _ody_qwen_finetune_model gate here.
+    if (
+        not tool_events
+        and (
+            _looks_like_destructive_request(_last_user)
+            # A one-word "yes" confirming a prior destructive ask (e.g. the
+            # assistant's own "Delete entity 9681969?") won't match on the
+            # user's turn alone — check what the assistant just asked too.
+            or _looks_like_destructive_request(_extract_last_assistant_message(messages))
+        )
+        and _looks_like_success_claim(full_response)
+    ):
+        logger.warning(
+            "[agent] fake-success guard: model claimed a destructive action "
+            "completed with zero tool calls this turn (model=%s). Response: %r",
+            model, full_response[:200],
+        )
+        full_response = "I couldn't make that change because no matching tool action completed."
     _response_before_tool_summary = full_response
     if tool_events:
         for _ev in reversed(tool_events):
