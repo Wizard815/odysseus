@@ -3876,6 +3876,17 @@ async def stream_agent_loop(
     # all 20 rounds, looks like the chat "died". Track recent call
     # signatures + consecutive no-text tool rounds to bail early.
     _recent_call_sigs = collections.deque(maxlen=6)
+    # Recent round TEXT (normalized), tracked alongside call sigs. A repeated
+    # tool call used to always reset _stuck_rounds back to 0 if the model
+    # wrote ANY non-empty text that round, on the assumption non-empty text
+    # means progress. Real incident: a model stuck on "wrong MCP server"
+    # repeated the exact same tool call across several rounds while also
+    # writing near-identical filler text each time ("Let me test the
+    # BoardNotes MCP connection:" / "...properly:") — the detector never
+    # tripped because it only ever checked the tool-call axis, not whether
+    # the text was ALSO just going in circles. 16+ rounds burned with zero
+    # progress before a human had to notice and stop it manually.
+    _recent_text_sigs = collections.deque(maxlen=6)
     _stuck_rounds = 0
     # Frequency of each exact call signature (tool + args), for the runaway
     # backstop. Counting identical repeats — not distinct same-tool calls —
@@ -4584,9 +4595,20 @@ async def stream_agent_loop(
         # rounds (just "<think>\n\n</think>" + a tool call) must not read as
         # progress, so strip think before checking.
         _real_text = _strip_think_blocks(cleaned_round).strip()
-        # Circling = repeating a recent call with nothing written. Any
-        # progress (a NEW distinct call, or actual answer text) resets it.
-        if _is_repeat and not _real_text:
+        # Normalized snippet for text-repeat detection — same idea as _sig,
+        # but for what the model WROTE rather than what it called. Only a
+        # meaningful prefix is compared so minor trailing variation (a
+        # different entity ID quoted, etc.) doesn't defeat the match.
+        _text_sig = re.sub(r"\s+", " ", _real_text.lower()).strip()[:100]
+        _text_is_repeat = bool(_text_sig) and _text_sig in _recent_text_sigs
+        if _text_sig:
+            _recent_text_sigs.append(_text_sig)
+        # Circling = repeating a recent call with nothing NEW written. Text
+        # only counts as progress if it isn't itself a near-repeat of recent
+        # text — a repeated tool call paired with repeated filler narration
+        # ("Let me test the connection:" every round) is still circling, not
+        # progress, even though the text field isn't literally empty.
+        if _is_repeat and (not _real_text or _text_is_repeat):
             _stuck_rounds += 1
         else:
             _stuck_rounds = 0
