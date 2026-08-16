@@ -607,7 +607,22 @@ class McpManager:
 
         session = self._sessions.get(server_id)
         if not session:
-            return {"error": f"MCP server not connected: {server_id}", "exit_code": 1}
+            # Distinct from the "session died mid-conversation" path below --
+            # this is a server that never had a session at all (e.g. it timed
+            # out during its initial connection build). Previously this
+            # failed immediately and permanently: every subsequent call to
+            # this server in the conversation kept hitting this same
+            # early-return, with no attempt to bring it up, until someone
+            # noticed and manually reconnected. Give it one real attempt
+            # first, same as the dead-connection path does.
+            logger.warning(f"MCP server {server_id} has no session, attempting connect before failing: {qualified_name}")
+            connected = (
+                await self._reconnect_builtin(server_id) if self.is_builtin(server_id)
+                else await self._reconnect_any(server_id)
+            )
+            session = self._sessions.get(server_id) if connected else None
+            if not session:
+                return {"error": f"MCP server not connected: {server_id}", "exit_code": 1}
 
         try:
             result = await self._do_call(session, tool_name, arguments)
