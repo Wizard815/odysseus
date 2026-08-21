@@ -3953,6 +3953,19 @@ async def stream_agent_loop(
             # write the answer instead of flailing further.
             all_tool_schemas = []
         elif _is_api_model:
+            # mcp_schemas (from the single _build_system_prompt call at turn
+            # start) is a point-in-time snapshot -- if an MCP server
+            # disconnects/reconnects mid-turn, or hadn't finished registering
+            # tools yet when that snapshot was taken, it silently stays
+            # missing from mcp_schemas for every remaining round even though
+            # tool-rag's separately-cached ToolIndex still (correctly or
+            # stale-ly) selects its tools into _relevant_tools. Confirmed
+            # real incident: RAG retrieval logged a Kanka MCP tool as
+            # selected, but tools_sent never included it because mcp_schemas
+            # never had it -- the model then flailed, calling unrelated
+            # tools in a loop. Re-pull live so a mid-turn reconnect is
+            # reflected on the very next round instead of never.
+            _mcp_schemas_live = mcp_mgr.get_all_openai_schemas(_mcp_disabled_map or {}) if mcp_mgr else []
             # Filter schemas by RAG-selected tools (if available)
             if _relevant_tools:
                 # _build_base_prompt unions _ADMIN_TOOLS into the prompt
@@ -3967,8 +3980,15 @@ async def stream_agent_loop(
                     s for s in FUNCTION_TOOL_SCHEMAS
                     if s.get("function", {}).get("name") in _schema_names
                 ]
+                _mcp_schema_names = {s.get("function", {}).get("name") for s in _mcp_schemas_live}
+                _missing_mcp = {t for t in _relevant_tools if t.startswith("mcp__")} - _mcp_schema_names
+                if _missing_mcp:
+                    logger.warning(
+                        f"[tool-rag] round={round_num} RAG selected MCP tools not present in live "
+                        f"mcp_schemas (server disconnected/reconnecting?): {sorted(_missing_mcp)}"
+                    )
                 _mcp_filtered = [
-                    s for s in mcp_schemas
+                    s for s in _mcp_schemas_live
                     if s.get("function", {}).get("name") in _relevant_tools
                 ]
                 all_tool_schemas = base_schemas + _mcp_filtered
@@ -3977,7 +3997,7 @@ async def stream_agent_loop(
                     s for s in FUNCTION_TOOL_SCHEMAS
                     if s.get("function", {}).get("name") not in _ADMIN_SCHEMA_NAMES
                 ]
-                all_tool_schemas = base_schemas + mcp_schemas
+                all_tool_schemas = base_schemas + _mcp_schemas_live
             # Odysseus-Qwen fine-tunes are trained to emit Odysseus tool calls
             # from the lightweight domain prompt. Do not inject OpenAI-native
             # tool schemas; that adds prompt overhead and changes the behavior
@@ -4015,14 +4035,15 @@ async def stream_agent_loop(
                 any(kw in _last_content for kw in _MCP_KEYWORDS)
                 or any(name.startswith("mcp__") for name in _relevant_tools)
             )
-            if _wants_mcp and mcp_schemas:
+            _mcp_schemas_live = mcp_mgr.get_all_openai_schemas(_mcp_disabled_map or {}) if mcp_mgr else []
+            if _wants_mcp and _mcp_schemas_live:
                 if _relevant_tools:
                     all_tool_schemas = [
-                        s for s in mcp_schemas
+                        s for s in _mcp_schemas_live
                         if s.get("function", {}).get("name") in _relevant_tools
                     ]
                 else:
-                    all_tool_schemas = mcp_schemas
+                    all_tool_schemas = _mcp_schemas_live
             else:
                 all_tool_schemas = []
         agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
