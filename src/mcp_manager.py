@@ -756,16 +756,47 @@ class McpManager:
         result = await session.call_tool(tool_name, arguments)
         output_parts = []
         images = []
+
+        def _mime_of(obj, default):
+            # Same rename risk as Tool.inputSchema -> input_schema: check
+            # both names defensively rather than assume the old one.
+            return getattr(obj, 'mime_type', None) or getattr(obj, 'mimeType', None) or default
+
         for content in result.content:
+            ctype = getattr(content, 'type', '')
             if hasattr(content, 'text'):
                 output_parts.append(content.text)
-            elif getattr(content, 'type', '') == 'image' and hasattr(content, 'data'):
+            elif ctype == 'image' and hasattr(content, 'data'):
                 # Image content (e.g. Playwright screenshots)
-                # Same rename risk as Tool.inputSchema -> input_schema: check
-                # both names defensively rather than assume the old one.
-                mime = getattr(content, 'mime_type', None) or getattr(content, 'mimeType', None) or 'image/png'
+                mime = _mime_of(content, 'image/png')
                 images.append({"data": content.data, "mimeType": mime})
                 output_parts.append(f"[Screenshot captured ({mime})]")
+            elif ctype == 'resource':
+                # EmbeddedResource carries its payload on .resource, so it has
+                # neither .text nor .data and fell through every branch here --
+                # silently contributing NOTHING to output. A server returning
+                # an embedded resource looked to the model like a tool that
+                # succeeded and returned empty. Surface it instead.
+                res = getattr(content, 'resource', None)
+                res_text = getattr(res, 'text', None)
+                uri = getattr(res, 'uri', None) or 'resource'
+                if res_text:
+                    output_parts.append(str(res_text))
+                elif getattr(res, 'blob', None):
+                    # Binary: describe it rather than dumping base64 into context.
+                    output_parts.append(
+                        f"[Resource: {uri} (binary, {_mime_of(res, 'application/octet-stream')})]"
+                    )
+                else:
+                    output_parts.append(f"[Resource: {uri}]")
+            elif ctype == 'resource_link':
+                # A pointer to a resource the server can read separately; the
+                # URI is the whole payload and is otherwise dropped.
+                output_parts.append(f"[Resource link: {getattr(content, 'uri', 'unknown')}]")
+            elif ctype == 'audio':
+                # AudioContent has .data, so the generic fallback below used to
+                # str() a base64 audio blob straight into the model's context.
+                output_parts.append(f"[Audio content ({_mime_of(content, 'audio/wav')})]")
             elif hasattr(content, 'data'):
                 output_parts.append(str(content.data))
 

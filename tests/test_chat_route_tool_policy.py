@@ -88,12 +88,97 @@ def test_browser_form_followups_include_approval_and_send_phrases():
     assert "submit(?:\\s+it)?" in source
 
 
-def test_agent_loop_expands_browser_mcp_tools_from_connected_server():
-    """Browser intent must not depend on stale hardcoded Playwright tool names."""
+def test_agent_loop_expands_mcp_tools_from_connected_server():
+    """MCP intent must not depend on stale hardcoded tool names."""
     source = (Path(__file__).resolve().parent.parent / "src" / "agent_loop.py").read_text(encoding="utf-8")
-    assert "def _expand_browser_mcp_tools" in source
-    assert "server_id\") == \"builtin_browser\"" in source
-    assert "_relevant_tools = _expand_browser_mcp_tools(_relevant_tools, mcp_mgr)" in source
+    assert "def _expand_mcp_server_tools" in source
+    assert "_relevant_tools = _expand_mcp_server_tools(_relevant_tools, mcp_mgr, _mcp_disabled_map)" in source
+
+
+class _FakeMcpMgr:
+    """Minimal stand-in exposing only the get_all_tools shape agent_loop uses."""
+
+    def __init__(self, tools):
+        self._tools = tools
+
+    def get_all_tools(self, disabled_map=None):
+        disabled_map = disabled_map or {}
+        return [
+            {
+                "server_id": sid,
+                "qualified_name": f"mcp__{sid}__{name}",
+                "is_disabled": name in (disabled_map.get(sid) or set()),
+            }
+            for sid, name in self._tools
+        ]
+
+
+def test_mcp_expansion_offers_whole_server_not_a_partial_slice():
+    """A server retrieval touched must arrive whole.
+
+    Regression: semantic top-k retrieval handed the model exactly one tool
+    from a server (Kanka's get_archives) while the tools it actually needed
+    (find_entities/get_entities) were never sent, and it burned 8 rounds
+    re-calling the one tool it had.
+    """
+    from src.agent_loop import _expand_mcp_server_tools
+
+    mgr = _FakeMcpMgr([
+        ("kanka", "get_archives"),
+        ("kanka", "find_entities"),
+        ("kanka", "get_entities"),
+        ("other", "unrelated_tool"),
+    ])
+
+    expanded = _expand_mcp_server_tools({"mcp__kanka__get_archives", "bash"}, mgr)
+
+    assert "mcp__kanka__find_entities" in expanded
+    assert "mcp__kanka__get_entities" in expanded
+    # Untouched servers stay out, and non-MCP selections are preserved.
+    assert "mcp__other__unrelated_tool" not in expanded
+    assert "bash" in expanded
+
+
+def test_mcp_expansion_honors_disabled_tools():
+    """Tools the user switched off in Settings must not reappear via expansion."""
+    from src.agent_loop import _expand_mcp_server_tools
+
+    mgr = _FakeMcpMgr([("kanka", "find_entities"), ("kanka", "delete_entities")])
+
+    expanded = _expand_mcp_server_tools(
+        {"mcp__kanka__find_entities"}, mgr, {"kanka": {"delete_entities"}}
+    )
+
+    assert "mcp__kanka__find_entities" in expanded
+    assert "mcp__kanka__delete_entities" not in expanded
+
+
+def test_mcp_expansion_leaves_oversized_server_out_entirely():
+    """Over the cap, a server is dropped whole rather than truncated.
+
+    A partial toolset is the exact failure this expansion exists to prevent,
+    so the cap must never be satisfied by sending half a server.
+    """
+    from src.agent_loop import _MCP_EXPANSION_TOOL_CAP, _expand_mcp_server_tools
+
+    huge = [("huge", f"tool_{i}") for i in range(_MCP_EXPANSION_TOOL_CAP + 5)]
+    mgr = _FakeMcpMgr(huge)
+
+    expanded = _expand_mcp_server_tools({"mcp__huge__tool_0"}, mgr)
+
+    # Only the originally-retrieved name survives; no partial expansion.
+    assert {n for n in expanded if n.startswith("mcp__huge__")} == {"mcp__huge__tool_0"}
+
+
+def test_workspace_terminus_override_preserves_mcp_tools():
+    """The Terminus branch must not evict retrieved MCP tools.
+
+    Regression: this branch hard-reassigned _relevant_tools, discarding 27
+    retrieved Kanka tools one millisecond after retrieval logged them.
+    """
+    source = (Path(__file__).resolve().parent.parent / "src" / "agent_loop.py").read_text(encoding="utf-8")
+    assert "_relevant_tools = set(_WORKSPACE_TERMINUS_TOOLS) | _mcp_selected" in source
+    assert "_relevant_tools = set(_WORKSPACE_TERMINUS_TOOLS)\n" not in source
 
 
 def test_disabled_tools_respects_missing_vs_explicit_toggles():
