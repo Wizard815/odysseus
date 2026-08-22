@@ -719,6 +719,15 @@ class McpManager:
             if not session:
                 return {"error": f"MCP server not connected: {server_id}", "exit_code": 1}
 
+        arg_error = self._validate_tool_args(server_id, tool_name, arguments)
+        if arg_error:
+            # Fail here rather than at the server: the round trip is wasted
+            # either way, but a schema-derived message names the exact
+            # argument and the valid alternatives, where a server-side error
+            # is usually a generic traceback the model can't act on.
+            logger.warning(f"MCP tool call rejected before dispatch: {qualified_name}: {arg_error}")
+            return {"error": arg_error, "exit_code": 1}
+
         try:
             result = await asyncio.wait_for(
                 self._do_call(session, tool_name, arguments), timeout=self.CALL_TOOL_TIMEOUT_S
@@ -785,21 +794,115 @@ class McpManager:
 
         return result
 
+    def _validate_tool_args(self, server_id: str, tool_name: str, arguments: Dict) -> Optional[str]:
+        """Check arguments against the tool's advertised JSON Schema.
+
+        Returns an actionable error string, or None when the call looks valid.
+
+        MCP tools ship a full input schema, but nothing checked the model's
+        arguments against it -- a call with a missing required field or a
+        hallucinated parameter name was dispatched anyway and came back as
+        whatever server-side error that produced, often a generic traceback
+        with no indication of which argument was wrong. Small models bleed
+        parameter conventions between similarly-named tools (a generic
+        `query` where a server wants `search_term`), and that is exactly the
+        case a schema-derived message can correct in one round.
+
+        Deliberately conservative -- it only rejects what the schema is
+        unambiguous about, since a false rejection blocks a call the server
+        would have accepted:
+          - no declared properties -> no opinion, skip entirely
+          - explicit additionalProperties: true -> unknown args are allowed
+        """
+        if not isinstance(arguments, dict):
+            return None
+
+        tool = next(
+            (t for t in self._tools.get(server_id, []) if t.get("name") == tool_name),
+            None,
+        )
+        if not tool:
+            return None
+
+        schema = tool.get("input_schema") or {}
+        if not isinstance(schema, dict):
+            return None
+        props = schema.get("properties")
+        if not isinstance(props, dict) or not props:
+            # Server didn't describe its inputs; it alone can judge them.
+            return None
+
+        required = schema.get("required")
+        required = required if isinstance(required, list) else []
+        missing = [r for r in required if r not in arguments]
+
+        unknown = []
+        if schema.get("additionalProperties") is not True:
+            unknown = [k for k in arguments if k not in props]
+
+        if not missing and not unknown:
+            return None
+
+        # Report BOTH problems at once. A wrong parameter name usually shows up
+        # as one unknown arg AND one missing required arg (`query` sent where
+        # the server wants `search_term`); reporting only the first means the
+        # model resends with both names and fails again on the second round.
+        problems = []
+        if missing:
+            problems.append(f"missing required argument(s): {', '.join(sorted(missing))}")
+        if unknown:
+            problems.append(f"unknown argument(s): {', '.join(sorted(unknown))}")
+        return (
+            f"Invalid arguments for '{tool_name}' -- {'; '.join(problems)}. "
+            f"This tool accepts: {', '.join(sorted(props))}."
+        )
+
     async def _do_call(self, session, tool_name: str, arguments: Dict) -> Dict:
         """Execute a single MCP tool call and return result dict."""
         result = await session.call_tool(tool_name, arguments)
         output_parts = []
         images = []
+
+        def _mime_of(obj, default):
+            # Same rename risk as Tool.inputSchema -> input_schema: check
+            # both names defensively rather than assume the old one.
+            return getattr(obj, 'mime_type', None) or getattr(obj, 'mimeType', None) or default
+
         for content in result.content:
+            ctype = getattr(content, 'type', '')
             if hasattr(content, 'text'):
                 output_parts.append(content.text)
-            elif getattr(content, 'type', '') == 'image' and hasattr(content, 'data'):
+            elif ctype == 'image' and hasattr(content, 'data'):
                 # Image content (e.g. Playwright screenshots)
-                # Same rename risk as Tool.inputSchema -> input_schema: check
-                # both names defensively rather than assume the old one.
-                mime = getattr(content, 'mime_type', None) or getattr(content, 'mimeType', None) or 'image/png'
+                mime = _mime_of(content, 'image/png')
                 images.append({"data": content.data, "mimeType": mime})
                 output_parts.append(f"[Screenshot captured ({mime})]")
+            elif ctype == 'resource':
+                # EmbeddedResource carries its payload on .resource, so it has
+                # neither .text nor .data and fell through every branch here --
+                # silently contributing NOTHING to output. A server returning
+                # an embedded resource looked to the model like a tool that
+                # succeeded and returned empty. Surface it instead.
+                res = getattr(content, 'resource', None)
+                res_text = getattr(res, 'text', None)
+                uri = getattr(res, 'uri', None) or 'resource'
+                if res_text:
+                    output_parts.append(str(res_text))
+                elif getattr(res, 'blob', None):
+                    # Binary: describe it rather than dumping base64 into context.
+                    output_parts.append(
+                        f"[Resource: {uri} (binary, {_mime_of(res, 'application/octet-stream')})]"
+                    )
+                else:
+                    output_parts.append(f"[Resource: {uri}]")
+            elif ctype == 'resource_link':
+                # A pointer to a resource the server can read separately; the
+                # URI is the whole payload and is otherwise dropped.
+                output_parts.append(f"[Resource link: {getattr(content, 'uri', 'unknown')}]")
+            elif ctype == 'audio':
+                # AudioContent has .data, so the generic fallback below used to
+                # str() a base64 audio blob straight into the model's context.
+                output_parts.append(f"[Audio content ({_mime_of(content, 'audio/wav')})]")
             elif hasattr(content, 'data'):
                 output_parts.append(str(content.data))
 
@@ -818,6 +921,8 @@ class McpManager:
             "stderr": output if is_error else "",
             "exit_code": 1 if is_error else 0,
         }
+        if is_error and output:
+            result_dict["untrusted_content"] = True
         if images:
             result_dict["images"] = images
         return result_dict

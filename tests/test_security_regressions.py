@@ -131,6 +131,12 @@ def test_readme_native_quickstart_uses_loopback():
     assert "0.0.0.0` only when you intentionally want" in docs
 
 
+def test_readme_warns_auth_enabled_for_network_access():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    assert "Keep `AUTH_ENABLED=true` for any network-accessible deployment." in readme
+    assert "Keep `LOCALHOST_BYPASS=false` outside local development." in readme
+
+
 def test_ollama_cookbook_runner_does_not_force_public_bind():
     route = Path("routes/cookbook_routes.py").read_text(encoding="utf-8")
     cookbook_js = Path("static/js/cookbook.js").read_text(encoding="utf-8")
@@ -738,6 +744,27 @@ def test_require_admin_allows_when_auth_explicitly_disabled(monkeypatch):
     assert require_admin(_Req()) is None
 
 
+def test_require_admin_uses_central_auth_disabled_parser(monkeypatch):
+    from core.middleware import require_admin
+
+    monkeypatch.setenv("AUTH_ENABLED", " false ")
+
+    class _State:
+        current_user = None
+
+    class _AppState:
+        auth_manager = None
+
+    class _App:
+        state = _AppState()
+
+    class _Req:
+        state = _State()
+        app = _App()
+
+    assert require_admin(_Req()) is None
+
+
 def test_internal_tool_owner_header_logic_requires_known_user():
     """Pin the owner-attribution branch used by app.AuthMiddleware without
     booting the full FastAPI app."""
@@ -778,7 +805,7 @@ def test_auth_manager_migrates_legacy_admin_role(tmp_path):
     mgr = AuthManager(str(auth_path))
 
     assert mgr.is_admin("admin") is True
-    data = json.loads(auth_path.read_text())
+    data = json.loads(auth_path.read_text(encoding="utf-8"))
     assert data["users"]["admin"]["is_admin"] is True
 
 
@@ -836,7 +863,7 @@ def test_web_content_fetcher_blocks_dns_to_private(monkeypatch):
 def test_mcp_config_listing_is_admin_gated():
     from routes import mcp_routes
 
-    src = Path(mcp_routes.__file__).read_text()
+    src = Path(mcp_routes.__file__).read_text(encoding="utf-8")
     assert "def list_servers(request: Request):" in src
     assert "def list_tools(request: Request):" in src
     assert "def list_server_tools(server_id: str, request: Request):" in src
@@ -973,7 +1000,7 @@ def test_diagnostics_routes_are_admin_gated():
     """db/rag stats + test endpoints must require admin (they relied only on
     the global session check before)."""
     src = Path(__file__).resolve().parents[1] / "routes" / "diagnostics_routes.py"
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     for handler in ("get_database_stats", "get_rag_stats", "test_youtube", "test_research"):
         assert f"def {handler}(request: Request" in text, handler
     assert text.count("require_admin(request)") >= 4
@@ -983,7 +1010,7 @@ def test_email_thread_rendering_sanitizes_body_html():
     """Both threaded render paths must run server-parsed body_html through the
     allowlist sanitizer (the flat path already did)."""
     src = Path(__file__).resolve().parents[1] / "static" / "js" / "emailLibrary.js"
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     # every `t.body_html` reference is wrapped by _sanitizeHtml(...)
     assert text.count("t.body_html") == text.count("_sanitizeHtml(t.body_html")
     assert "t.body_html" in text  # guard against the file being refactored away
@@ -991,18 +1018,22 @@ def test_email_thread_rendering_sanitizes_body_html():
 
 def test_session_html_export_escapes_name():
     src = Path(__file__).resolve().parents[1] / "routes" / "session_routes.py"
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     assert "safe_title = html.escape(session.name" in text
     assert "<title>{session.name}" not in text
     assert "<h1>{session.name}</h1>" not in text
 
 
 def test_mcp_oauth_page_escapes_reflected_values():
-    src = Path(__file__).resolve().parents[1] / "routes" / "mcp_routes.py"
-    text = src.read_text()
-    body = text.split("def _oauth_authorize_page(", 1)[1].split("return f", 1)[0]
-    for var in ("auth_url", "server_id", "host", "redirect_uri"):
+    src = Path(__file__).resolve().parents[1] / "routes" / "mcp" / "mcp_routes.py"
+    text = src.read_text(encoding="utf-8")
+    page = text.split("def _oauth_authorize_page(", 1)[1].split("def _oauth_result_page", 1)[0]
+    body = page.split("return f", 1)[0]
+    for var in ("auth_url", "server_id", "redirect_uri"):
         assert f"{var} = html.escape({var}" in body, var
+    # The Host header is no longer reflected at all: the paste-back form posts to
+    # a relative action, so there is nothing to escape and nothing to smuggle.
+    assert "{host}" not in page
 
 
 def _import_mcp_routes():
@@ -1081,7 +1112,7 @@ def test_mcp_oauth_config_sanitizes_paths_and_env(tmp_path, monkeypatch):
 
 def test_gmail_mcp_preset_uses_contained_oauth_paths():
     src = Path(__file__).resolve().parents[1] / "static" / "js" / "admin.js"
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     preset = text.split('{ name: "Gmail"', 1)[1].split('{ name: "Email (IMAP/SMTP)"', 1)[0]
 
     assert "~/.gmail-mcp" not in preset
@@ -1165,7 +1196,7 @@ def test_chat_active_document_lookup_is_owner_scoped():
     import re
 
     src = Path(__file__).resolve().parents[1] / "routes" / "chat_routes.py"
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     # The frontend-supplied id is resolved through the shared owner filter.
     assert "_owner_session_filter(_doc_q, ctx.user)" in text
     assert "_owner_session_filter(_session_doc_q, ctx.user)" in text
