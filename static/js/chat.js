@@ -11,6 +11,7 @@ import sessionModule from './sessions.js';
 import chatRenderer from './chatRenderer.js?v=20260819approvalcontrol1';
 import chatStream from './chatStream.js?v=20260819approvalcontrol1';
 import { addAITTSButton } from './tts-ai.js';
+import { isUnsupportedToolsError } from './util/toolSupportError.js';
 import markdownModule from './markdown.js';
 import spinnerModule from './spinner.js';
 import presetsModule from './presets.js';
@@ -2115,8 +2116,10 @@ import { loadPanel } from './panels.js';
           if (m) errText = m[1].replace(/\\"/g, '"');
           else if (errBody.length < 200) errText = errBody;
         } catch {}
-        // Auto-switch to chat mode for tool-related errors
-        if (errText.includes('tool') || errText.includes('auto')) {
+        // Auto-switch to chat mode only when the error itself says the
+        // model/backend can't use tools -- not just mentions "tool" (see
+        // toolSupportError.js for the false positives this used to hit).
+        if (isUnsupportedToolsError(errText)) {
           errText = 'This model doesn\'t support agent tools — switched to Chat mode. Try again.';
           const _ab = document.getElementById('mode-agent-btn');
           const _cb = document.getElementById('mode-chat-btn');
@@ -4532,8 +4535,9 @@ import { loadPanel } from './panels.js';
               || document.querySelector('.msg-ai:last-of-type .body');
             if (errorHolder) {
               let errMsg = `Error: ${err.message}`;
-              // Add hint for tool-call errors
-              if (err.message && (err.message.includes('tool') || err.message.includes('auto'))) {
+              // Add hint only when the error itself says tools aren't
+              // supported, not just mentions "tool" (see toolSupportError.js).
+              if (isUnsupportedToolsError(err.message)) {
                 errMsg += '\n\nThis model may not support tools — try switching to Chat mode.';
               }
               typewriterInto(errorHolder, errMsg);
