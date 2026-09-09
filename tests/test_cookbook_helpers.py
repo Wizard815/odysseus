@@ -989,6 +989,97 @@ def test_cached_model_scan_runs_additional_hf_cache(tmp_path):
     assert rec["is_diffusion"] is False
 
 
+def test_cached_model_scan_finds_loose_toplevel_mmproj(tmp_path):
+    """A model's own mmproj can sit directly in the repo dir (not inside
+    snapshots/) -- placed there manually, or by a downloader that doesn't use
+    the standard HF layout. Confirmed real report: a model's own vision
+    projector sat exactly this way (models--org--repo/mmproj-BF16.gguf,
+    sibling to blobs/refs/snapshots/trees, not inside any snapshot), so
+    scan_hf's snapshots-only walk never found it -- the Vision toggle then had
+    nothing of this model's own to offer, and picked up a DIFFERENT model's
+    projector instead. The fix must discover it AND resolve to the correct
+    on-disk path.
+    """
+    extra_cache = tmp_path / "extra_hf_cache"
+    model_dir = extra_cache / "models--unsloth--Qwen3.8-27B-GGUF"
+    snap = model_dir / "snapshots" / "rev-1"
+    snap.mkdir(parents=True)
+    (model_dir / "blobs").mkdir()
+    (model_dir / "refs").mkdir()
+    (model_dir / "trees").mkdir()
+    (snap / "Qwen3.8-27B-UD-Q6_K_XL.gguf").write_bytes(b"weights")
+    # The loose top-level file -- sibling to snapshots/, not inside it.
+    (model_dir / "mmproj-BF16.gguf").write_bytes(b"projector-bytes")
+
+    scan_py = tmp_path / "scan_cache.py"
+    scan_py.write_text(
+        _cached_model_scan_script(add_hf_cache=str(extra_cache)),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(scan_py)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    models = json.loads(proc.stdout)
+    by_repo = {m["repo_id"]: m for m in models}
+    ggufs = by_repo["unsloth/Qwen3.8-27B-GGUF"]["gguf_files"]
+
+    projector = next(f for f in ggufs if f["role"] == "projector")
+    assert projector["name"] == "mmproj-BF16.gguf"
+    assert projector["quant"] == "BF16"
+    assert projector["size_bytes"] == len(b"projector-bytes")
+    # rel_path must be resolvable by cookbookServe.js's _selectedGgufExpr,
+    # which unconditionally builds "<repo>/snapshots/<rel_path>" -- "../" is
+    # what steps back out to the repo root without any JS changes; a bare
+    # filename here would resolve to a nonexistent path under snapshots/.
+    assert projector["rel_path"] == "../mmproj-BF16.gguf"
+    # _selectedGgufExpr (cookbookServe.js) builds "<repo>/snapshots/<rel_path>"
+    # -- exercise that exact construction, not a path through the revision dir.
+    resolved = (model_dir / "snapshots" / projector["rel_path"]).resolve()
+    assert resolved == (model_dir / "mmproj-BF16.gguf").resolve()
+
+    model_file = next(f for f in ggufs if f["role"] == "model")
+    assert model_file["rel_path"] == "rev-1/Qwen3.8-27B-UD-Q6_K_XL.gguf"
+
+
+def test_cached_model_scan_loose_toplevel_gguf_skips_names_already_in_snapshots(tmp_path):
+    """A file also present in snapshots/ (the normal, correctly-laid-out case)
+    must not be double-listed just because collect_ggufs found it there and
+    the repo root happens to contain the same-named file (e.g. a symlink
+    farm or an extra copy) -- one entry per filename, the snapshots/ one wins.
+    """
+    extra_cache = tmp_path / "extra_hf_cache"
+    model_dir = extra_cache / "models--acme--vision-model"
+    snap = model_dir / "snapshots" / "rev-1"
+    snap.mkdir(parents=True)
+    (snap / "mmproj-BF16.gguf").write_bytes(b"correct-copy")
+    # Same filename sitting loose at the repo root too.
+    (model_dir / "mmproj-BF16.gguf").write_bytes(b"stray-copy")
+
+    scan_py = tmp_path / "scan_cache.py"
+    scan_py.write_text(
+        _cached_model_scan_script(add_hf_cache=str(extra_cache)),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(scan_py)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    models = json.loads(proc.stdout)
+    by_repo = {m["repo_id"]: m for m in models}
+    ggufs = by_repo["acme/vision-model"]["gguf_files"]
+
+    matches = [f for f in ggufs if f["name"] == "mmproj-BF16.gguf"]
+    assert len(matches) == 1
+    assert matches[0]["rel_path"] == "rev-1/mmproj-BF16.gguf"
+
+
 def test_validate_serve_cmd_accepts_find_subshell_for_mmproj():
     """$(find …) for mmproj path should be accepted, same as $(printf %s …)."""
     cmd = (
