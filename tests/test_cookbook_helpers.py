@@ -863,6 +863,77 @@ def test_cached_model_scan_reports_plain_dir_gguf(tmp_path):
     assert ggufs[3]["quant"] == "BF16"
 
 
+def test_cached_model_scan_does_not_flatten_a_nested_hf_cache_root(tmp_path):
+    """A plain model_dir entry can itself be a whole SECOND HF-cache root
+    nested one level down (model_dir=/app/models, one of its subfolders is
+    really .../HFCache/hub/models--org--repo/...) rather than a single
+    model's own files.
+
+    Confirmed real incident: exactly this layout made the plain-dir scanner
+    walk every repo under the nested root and merge every model's weights
+    AND every model's mmproj into one flat gguf_files list for a single fake
+    "model" named after the folder ("HFCache"). Picking Qwen3.8's own weights
+    from that merged list then pulled in gemma's mmproj (whichever repo
+    sorted alphabetically first) as "the" projector -- for every model under
+    that folder, regardless of which one was actually selected. The fix must
+    keep each nested repo as its own separately-scoped model entry instead.
+    """
+    root = tmp_path / "models_dir"
+    root.mkdir()
+
+    # An ordinary single-model plain dir, sibling to the nested cache root --
+    # must be completely unaffected by the fix.
+    plain = root / "Bonsai-8B-Q1_0"
+    plain.mkdir()
+    (plain / "Bonsai-8B-Q1_0.gguf").write_bytes(b"bonsai-weights")
+
+    # The nested HF-cache root: model_dir/HFCache/hub/models--org--repo/...
+    hfcache_hub = root / "HFCache" / "hub"
+    for org_repo, weight_name in [
+        ("models--unsloth--Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-Q6_K_XL.gguf"),
+        ("models--unsloth--gemma-4-31B-it-qat-GGUF", "gemma-4-31B-it-qat-UD-Q4_K_XL.gguf"),
+    ]:
+        snap = hfcache_hub / org_repo / "snapshots" / "rev-1"
+        snap.mkdir(parents=True)
+        (snap / weight_name).write_bytes(b"weights")
+        (hfcache_hub / org_repo / "mmproj-BF16.gguf").write_bytes(b"own-projector")
+
+    scan_py = tmp_path / "scan_cache.py"
+    scan_py.write_text(_cached_model_scan_script([str(root)]), encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(scan_py)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    by_repo = {m["repo_id"]: m for m in json.loads(proc.stdout)}
+
+    # The nested cache root must not appear as one flattened pseudo-model.
+    assert "HFCache" not in by_repo
+
+    # The sibling plain-dir model is untouched.
+    assert by_repo["Bonsai-8B-Q1_0"]["is_local_dir"] is True
+    assert [f["name"] for f in by_repo["Bonsai-8B-Q1_0"]["gguf_files"]] == ["Bonsai-8B-Q1_0.gguf"]
+
+    # Each nested repo is its own correctly-scoped entry -- not merged.
+    assert "unsloth/Qwen3.8-27B-GGUF" in by_repo
+    assert "unsloth/gemma-4-31B-it-qat-GGUF" in by_repo
+
+    qwen_ggufs = by_repo["unsloth/Qwen3.8-27B-GGUF"]["gguf_files"]
+    qwen_projectors = [f for f in qwen_ggufs if f["role"] == "projector"]
+    assert len(qwen_projectors) == 1
+    assert qwen_projectors[0]["rel_path"] == "../mmproj-BF16.gguf"
+    # Qwen's list must not contain gemma's model weights or gemma's projector.
+    assert not any("gemma" in f["rel_path"] for f in qwen_ggufs)
+
+    gemma_ggufs = by_repo["unsloth/gemma-4-31B-it-qat-GGUF"]["gguf_files"]
+    gemma_projectors = [f for f in gemma_ggufs if f["role"] == "projector"]
+    assert len(gemma_projectors) == 1
+    assert gemma_projectors[0]["rel_path"] == "../mmproj-BF16.gguf"
+    assert not any("Qwen3.8" in f["rel_path"] for f in gemma_ggufs)
+
+
 def test_cached_model_scan_uses_ollama_api_before_cli_and_windows_opt_in():
     script = _cached_model_scan_script()
 
