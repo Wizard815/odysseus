@@ -10,11 +10,20 @@
 # Enable by setting COMPOSE_FILE in .env:
 #   COMPOSE_FILE=docker-compose.yml:docker/llama-cuda.yml
 #
-# Put your .gguf files under LLAMA_CUDA_MODELS_DIR (default ./data/llama-models)
-# and point LLAMA_CUDA_MODEL at the filename. Then in Odysseus, register a
-# Model Endpoint pointing at http://llama-cuda:8080/v1 (base_url, no API key
-# needed) — Cookbook and Chat will see it like any other OpenAI-compatible
-# provider.
+# Runs llama-server in ROUTER MODE (--models-dir), not a fixed -m model --
+# confirmed present in this image's /app/llama-server --help (same flags as
+# docker/llama-rocm.yml): --models-dir, --models-preset, --models-max,
+# --models-autoload, --sleep-idle-seconds. Drop .gguf files into
+# LLAMA_CUDA_MODELS_DIR (default ./data/llama-models) and the server
+# lists/autoloads them by filename -- no fixed model baked into this compose
+# file. --sleep-idle-seconds is the idle timer; there is no such setting
+# inside Odysseus/Cookbook's own UI since this sidecar isn't Cookbook-managed
+# -- it's a standalone container Odysseus only talks HTTP to, so the idle
+# timer lives here as a CLI flag (default disabled via LLAMA_CUDA_IDLE_SECONDS).
+#
+# Register it in Odysseus as a Model Endpoint: base_url
+# http://llama-cuda:8080/v1, no API key. Whatever model name the chat
+# request specifies is what the router loads/routes to.
 services:
   llama-cuda:
     container_name: llama-cuda
@@ -35,8 +44,13 @@ services:
               count: all
               capabilities: [gpu]
     command:
-      - -m
-      - /models/${LLAMA_CUDA_MODEL:?set LLAMA_CUDA_MODEL to a .gguf filename under LLAMA_CUDA_MODELS_DIR}
+      - --models-dir
+      - /models
+      - --models-max
+      - "${LLAMA_CUDA_MODELS_MAX:-2}"
+      - --models-autoload
+      - --sleep-idle-seconds
+      - "${LLAMA_CUDA_IDLE_SECONDS:--1}"
       - -ngl
       - "99"
       - --host

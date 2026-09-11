@@ -11,11 +11,27 @@
 #   COMPOSE_FILE=docker-compose.yml:docker/llama-rocm.yml
 #   RENDER_GID=<output of: getent group render | cut -d: -f3>
 #
-# Put your .gguf files under LLAMA_ROCM_MODELS_DIR (default ./data/llama-models)
-# and point LLAMA_ROCM_MODEL at the filename. Then in Odysseus, register a
-# Model Endpoint pointing at http://llama-rocm:8080/v1 (base_url, no API key
-# needed) — Cookbook and Chat will see it like any other OpenAI-compatible
-# provider.
+# Runs llama-server in ROUTER MODE (--models-dir), not a fixed -m model --
+# confirmed present in this image's /app/llama-server --help:
+#   --models-dir, --models-preset, --models-max, --models-autoload,
+#   --sleep-idle-seconds
+# Drop .gguf files into LLAMA_ROCM_MODELS_DIR (default ./data/llama-models)
+# and the server lists/autoloads them by filename -- no fixed model baked
+# into this compose file, and no separate Cookbook download/serve step
+# needed. --sleep-idle-seconds is the idle timer (there is no such setting
+# inside Odysseus/Cookbook's own UI -- this sidecar isn't Cookbook-managed,
+# it's a standalone container Odysseus only talks HTTP to, so the idle
+# timer lives here as a CLI flag, default disabled via LLAMA_ROCM_IDLE_SECONDS).
+#
+# Register it in Odysseus as a Model Endpoint: base_url
+# http://llama-rocm:8080/v1, no API key. Whatever model name the chat
+# request specifies is what the router loads/routes to.
+#
+# NOT independently verified against real gfx906 hardware: whether -ngl/-fa/
+# -sm below apply as defaults to every router-loaded model, or only to a
+# single fixed -m launch. If a loaded model doesn't pick up GPU offload,
+# switch to --models-preset (an INI file with per-model overrides) instead
+# of these global flags -- see --models-preset in `llama-server --help`.
 services:
   llama-rocm:
     container_name: llama-rocm
@@ -42,9 +58,13 @@ services:
     environment:
       - HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
     command:
-      - --server
-      - -m
-      - /models/${LLAMA_ROCM_MODEL:?set LLAMA_ROCM_MODEL to a .gguf filename under LLAMA_ROCM_MODELS_DIR}
+      - --models-dir
+      - /models
+      - --models-max
+      - "${LLAMA_ROCM_MODELS_MAX:-2}"
+      - --models-autoload
+      - --sleep-idle-seconds
+      - "${LLAMA_ROCM_IDLE_SECONDS:--1}"
       - -ngl
       - "99"
       - -fa

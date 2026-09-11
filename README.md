@@ -47,7 +47,7 @@ Odysseus's own image is deliberately slim — it doesn't bundle a GPU toolchain.
 - **AMD gfx906 (MI50/MI60/Radeon VII):** [`zenth815/mx-llama-rocm10-gfx906`](https://hub.docker.com/r/zenth815/mx-llama-rocm10-gfx906) — a gfx906-tuned llama.cpp fork built on ROCm 10, since gfx906 isn't officially supported past ROCm 6.
 - **NVIDIA:** the official [`ghcr.io/ggml-org/llama.cpp:server-cuda`](https://github.com/ggml-org/llama.cpp/blob/master/docs/docker.md) image — no custom build needed, NVIDIA is officially supported upstream.
 
-See `docker/llama-rocm.yml` / `docker/llama-cuda.yml` for example sidecar service definitions.
+Both `docker/llama-rocm.yml` and `docker/llama-cuda.yml` run `llama-server` in **router mode** (`--models-dir`), confirmed present in both images — no fixed model baked into the compose file. Drop `.gguf` files into the mounted models directory and the server auto-loads whichever one a chat request names; `--sleep-idle-seconds` (env `LLAMA_ROCM_IDLE_SECONDS` / `LLAMA_CUDA_IDLE_SECONDS`, default disabled) controls the idle timer. There's no such setting inside Odysseus/Cookbook's own UI — these sidecars aren't Cookbook-managed, Odysseus only talks HTTP to whatever's registered as a Model Endpoint, so the idle timer is a flag on the sidecar itself.
 
 **2. Fallback: let Cookbook install/compile an engine at runtime.** Cookbook can still `pip install` ROCm/CUDA-compatible vLLM or llama-cpp-python wheels, or compile llama.cpp from source, directly inside the Odysseus container — useful for a model/flag combo that doesn't have a prebuilt image yet. This needs the host GPU device(s) passed through:
 
