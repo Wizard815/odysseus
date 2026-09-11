@@ -38,10 +38,10 @@ def _add_server(monkeypatch):
     (require_admin is the only other thing the function touches via `request`).
 
     Callers must pass every Form(...) parameter add_server reads past the args
-    check (url, oauth_file, oauth_config): calling the endpoint directly skips
-    FastAPI's dependency resolution, so an omitted one arrives as the Form
-    marker object itself rather than its declared default, and later code
-    (e.g. `if oauth_file:`) reads that marker as truthy.
+    check (url, headers, oauth_file, oauth_config): calling the endpoint
+    directly skips FastAPI's dependency resolution, so an omitted one arrives
+    as the Form marker object itself rather than its declared default, and
+    later code (e.g. `if oauth_file:`) reads that marker as truthy.
     """
     monkeypatch.setattr(mcp_routes, "require_admin", lambda request: None)
     manager = MagicMock()
@@ -69,6 +69,7 @@ def test_add_server_rejects_malformed_args_instead_of_defaulting(monkeypatch):
             args="/app/data/jarvis-files",  # the exact value from issue #6211
             env="{}",
             url=None,
+            headers=None,
             oauth_file=None,
             oauth_config=None,
         ))
@@ -90,6 +91,7 @@ def test_add_server_still_accepts_valid_json_args(monkeypatch):
         args=json.dumps(["/app/data/jarvis-files"]),
         env="{}",
         url=None,
+        headers=None,
         oauth_file=None,
         oauth_config=None,
     ))
@@ -117,6 +119,7 @@ def test_add_server_rejects_valid_json_args_that_is_not_a_list(monkeypatch):
             args="5",
             env="{}",
             url=None,
+            headers=None,
             oauth_file=None,
             oauth_config=None,
         ))
@@ -139,6 +142,7 @@ def test_add_server_still_defaults_empty_args_to_empty_list(monkeypatch):
         args="",
         env="{}",
         url=None,
+        headers=None,
         oauth_file=None,
         oauth_config=None,
     ))
