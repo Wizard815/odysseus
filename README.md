@@ -40,15 +40,22 @@ Native installs, GPU notes, Windows/macOS instructions, HTTPS, and configuration
 
 ## GPU Support
 
-Odysseus ships compose overlays for NVIDIA, AMD ROCm, and dual AMD+NVIDIA setups. Set `COMPOSE_FILE` in your `.env` to activate one — no code changes needed.
+Odysseus's own image is deliberately slim — it doesn't bundle a GPU toolchain. There are two ways to get GPU-accelerated inference talking to it:
+
+**1. Recommended: run the inference engine as its own sidecar container.** Point a prebuilt, hardware-tuned `llama-server` (or vLLM, etc.) image at your GPU, then register its OpenAI-compatible URL as a **Model Endpoint** in Odysseus (Settings → Model Endpoints). Odysseus never touches the GPU directly — it just talks HTTP to the sidecar. This is faster to start (no first-serve compile), gets you hardware-tuned kernels instead of a generic from-source build, and keeps the app image free of GPU toolchains.
+
+- **AMD gfx906 (MI50/MI60/Radeon VII):** [`zenth815/mx-llama-rocm10-gfx906`](https://hub.docker.com/r/zenth815/mx-llama-rocm10-gfx906) — a gfx906-tuned llama.cpp fork built on ROCm 10, since gfx906 isn't officially supported past ROCm 6.
+- **NVIDIA:** the official [`ghcr.io/ggml-org/llama.cpp:server-cuda`](https://github.com/ggml-org/llama.cpp/blob/master/docs/docker.md) image — no custom build needed, NVIDIA is officially supported upstream.
+
+See `docker/llama-rocm.yml` / `docker/llama-cuda.yml` for example sidecar service definitions.
+
+**2. Fallback: let Cookbook install/compile an engine at runtime.** Cookbook can still `pip install` ROCm/CUDA-compatible vLLM or llama-cpp-python wheels, or compile llama.cpp from source, directly inside the Odysseus container — useful for a model/flag combo that doesn't have a prebuilt image yet. This needs the host GPU device(s) passed through:
 
 | Setup | Overlay | Requirement |
 |---|---|---|
 | NVIDIA | `docker/gpu.nvidia.yml` | nvidia-container-toolkit |
-| AMD ROCm | `docker/rocm-overlay.gpu.amd.yml` | ROCm drivers, render GID |
+| AMD ROCm | `docker/gpu.amd.yml` | ROCm drivers, render GID |
 | AMD + NVIDIA | `docker/gpu.amd-nvidia.yml` | Both of the above |
-
-**AMD / dual-GPU quick start:**
 
 ```bash
 # Find your render group GID
@@ -57,10 +64,7 @@ getent group render | cut -d: -f3   # usually 18 on Unraid
 # .env
 COMPOSE_FILE=docker-compose.yml:docker/gpu.amd-nvidia.yml
 RENDER_GID=18
-ROCM_VERSION=6.1.2   # 6.2.4 for RDNA2, 6.3.4 for RDNA3
 ```
-
-The ROCm overlays build a custom Ubuntu 22.04 + ROCm image on top of the published Odysseus image. On first serve, the Cookbook auto-detects your GPU (gfx906/MI50, RDNA2, RDNA3, NVIDIA) and compiles the right llama.cpp backend — binaries are cached in `APP_DATA_DIR` so rebuilds and container recreates don't wipe them.
 
 ## Features
 

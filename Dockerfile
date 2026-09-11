@@ -14,8 +14,15 @@ FROM python:3.14-slim
 # System deps. tmux is required by Cookbook for background downloads/serves.
 # openssh-client is required for Cookbook remote server tests, setup, probes,
 # downloads, and serves from Docker installs.
-# git/cmake are required when Cookbook builds llama.cpp on first llama.cpp
-# launch inside Docker.
+# git/cmake are required when Cookbook builds llama.cpp (CPU only) on first
+# launch inside Docker. GPU inference engines (ROCm/CUDA llama-server, vLLM,
+# etc.) are NOT compiled inside this image -- run them as their own sidecar
+# containers (e.g. zenth815/mx-llama-rocm10-gfx906 for AMD gfx906, or
+# ghcr.io/ggml-org/llama.cpp:server-cuda for NVIDIA) and register each as a
+# Model Endpoint in Odysseus. See docs/setup.md "GPU inference" for the
+# sidecar pattern -- it's faster (no first-serve compile wait), gets you
+# hardware-tuned kernels instead of a generic from-source build, and keeps
+# this image free of GPU toolchains.
 # nodejs/npm provide npx for the built-in Browser MCP server.
 # chromium provides the actual browser binary used by that MCP server.
 # gosu lets the entrypoint drop privileges cleanly so signals still reach

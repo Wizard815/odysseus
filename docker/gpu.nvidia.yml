@@ -18,8 +18,12 @@
 #
 # This overlay only passes the host GPU through to the container.
 # The slim Odysseus image does not bundle CUDA userspace or inference
-# engines — install vLLM / llama-cpp-python / SGLang via
-# Cookbook -> Dependencies (or pip) before serving GPU models.
+# engines. For NVIDIA, running the official ghcr.io/ggml-org/llama.cpp:
+# server-cuda image as its own sidecar container and registering it as a
+# Model Endpoint is the recommended path (see docker/llama-cuda.yml +
+# README.md "GPU Support"). This overlay still matters if you want Cookbook
+# to install vLLM / llama-cpp-python / SGLang wheels (or compile from
+# source) inside the Odysseus container itself via Cookbook -> Dependencies.
 services:
   odysseus:
     environment:

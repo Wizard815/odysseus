@@ -13,8 +13,6 @@ ROOT = Path(__file__).resolve().parent.parent
 MIGRATION = ROOT / "scripts" / "migrate_searxng_settings.py"
 COMPOSE_FILES = (
     ROOT / "docker-compose.yml",
-    ROOT / "docker-compose.gpu-amd.yml",
-    ROOT / "docker-compose.gpu-nvidia.yml",
 )
 
 

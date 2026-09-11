@@ -212,8 +212,6 @@ def test_paste_back_form_action_is_relative():
 
 _COMPOSE_FILES = (
     "docker-compose.yml",
-    "docker-compose.gpu-nvidia.yml",
-    "docker-compose.gpu-amd.yml",
 )
 
 

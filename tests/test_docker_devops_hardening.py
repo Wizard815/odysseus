@@ -14,8 +14,6 @@ from starlette.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILES = [
     ROOT / "docker-compose.yml",
-    ROOT / "docker-compose.gpu-nvidia.yml",
-    ROOT / "docker-compose.gpu-amd.yml",
 ]
 HOST_DOCKER_OVERLAY = ROOT / "docker" / "host-docker.yml"
 TEST_DOCS = [

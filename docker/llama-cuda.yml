@@ -1,0 +1,45 @@
+# NVIDIA GPU llama.cpp server sidecar, using the official upstream CUDA image
+# (no custom build needed — NVIDIA is officially supported by mainline
+# llama.cpp). Same pattern as docker/llama-rocm.yml: runs as its own
+# container next to Odysseus rather than compiled inside it.
+#   https://github.com/ggml-org/llama.cpp/blob/master/docs/docker.md
+#
+# Requires the NVIDIA Container Toolkit on the host (see docker/gpu.nvidia.yml
+# for install steps).
+#
+# Enable by setting COMPOSE_FILE in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker/llama-cuda.yml
+#
+# Put your .gguf files under LLAMA_CUDA_MODELS_DIR (default ./data/llama-models)
+# and point LLAMA_CUDA_MODEL at the filename. Then in Odysseus, register a
+# Model Endpoint pointing at http://llama-cuda:8080/v1 (base_url, no API key
+# needed) — Cookbook and Chat will see it like any other OpenAI-compatible
+# provider.
+services:
+  llama-cuda:
+    container_name: llama-cuda
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    restart: unless-stopped
+    ports:
+      - "${LLAMA_CUDA_BIND:-127.0.0.1}:${LLAMA_CUDA_PORT:-8091}:8080"
+    volumes:
+      - ${LLAMA_CUDA_MODELS_DIR:-./data/llama-models}:/models
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - -m
+      - /models/${LLAMA_CUDA_MODEL:?set LLAMA_CUDA_MODEL to a .gguf filename under LLAMA_CUDA_MODELS_DIR}
+      - -ngl
+      - "99"
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"

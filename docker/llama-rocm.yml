@@ -1,0 +1,57 @@
+# AMD gfx906 (MI50/MI60/Radeon VII) llama.cpp server sidecar.
+#
+# This is the recommended way to serve GGUF models on gfx906: a prebuilt,
+# hardware-tuned llama-server (custom SGEMM/RoPE/MMQ kernels for gfx906,
+# built on ROCm 10) running as its own container, next to Odysseus rather
+# than compiled inside it. Faster to start, no first-serve compile wait, and
+# keeps the Odysseus image free of GPU toolchains.
+#   https://hub.docker.com/r/zenth815/mx-llama-rocm10-gfx906
+#
+# Enable by setting COMPOSE_FILE in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker/llama-rocm.yml
+#   RENDER_GID=<output of: getent group render | cut -d: -f3>
+#
+# Put your .gguf files under LLAMA_ROCM_MODELS_DIR (default ./data/llama-models)
+# and point LLAMA_ROCM_MODEL at the filename. Then in Odysseus, register a
+# Model Endpoint pointing at http://llama-rocm:8080/v1 (base_url, no API key
+# needed) — Cookbook and Chat will see it like any other OpenAI-compatible
+# provider.
+services:
+  llama-rocm:
+    container_name: llama-rocm
+    image: zenth815/mx-llama-rocm10-gfx906:latest
+    restart: unless-stopped
+    # ipc=host + these two relaxations are what the image's own published
+    # run command requires — ROCm's HSA runtime needs them for shared-memory
+    # IPC between its kernel-mode driver and userspace.
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - ${RENDER_GID:-render}
+    ports:
+      - "${LLAMA_ROCM_BIND:-127.0.0.1}:${LLAMA_ROCM_PORT:-8090}:8080"
+    volumes:
+      - ${LLAMA_ROCM_MODELS_DIR:-./data/llama-models}:/models
+    environment:
+      - HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
+    command:
+      - --server
+      - -m
+      - /models/${LLAMA_ROCM_MODEL:?set LLAMA_ROCM_MODEL to a .gguf filename under LLAMA_ROCM_MODELS_DIR}
+      - -ngl
+      - "99"
+      - -fa
+      - "1"
+      - -sm
+      - layer
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"

@@ -6,20 +6,16 @@
 #   AMD    — ROCm drivers on the host (/dev/kfd + /dev/dri). See docker/gpu.amd.yml.
 #   NVIDIA — NVIDIA Container Toolkit installed on the host. See docker/gpu.nvidia.yml.
 #
-# Builds Dockerfile.rocm-overlay with INSTALL_CUDA=true, so the resulting
-# image has BOTH the ROCm/HIP and CUDA toolchains — that's what lets
-# Cookbook's dual-build wrapper compile llama-server-hip and
-# llama-server-cuda and route between them at launch time via
-# HIP_VISIBLE_DEVICES (see routes/cookbook_helpers.py).
+# The slim Odysseus image does not bundle ROCm or CUDA userspace. Running
+# zenth815/mx-llama-rocm10-gfx906 and ghcr.io/ggml-org/llama.cpp:server-cuda
+# as their own sidecar containers, each registered as a Model Endpoint, is
+# the recommended path for a mixed AMD+NVIDIA host (see docker/llama-rocm.yml,
+# docker/llama-cuda.yml, README.md "GPU Support"). This overlay still matters
+# if you want Cookbook's dual-build wrapper (routes/cookbook_helpers.py) to
+# compile llama-server-hip and llama-server-cuda from source inside the
+# Odysseus container itself and route between them via HIP_VISIBLE_DEVICES.
 services:
   odysseus:
-    build:
-      context: .
-      dockerfile: Dockerfile.rocm-overlay
-      args:
-        BASE_IMAGE: ${ODYSSEUS_IMAGE:-zenth815/odysseus-frontend:latest}
-        ROCM_VERSION: ${ROCM_VERSION:-6.1.2}
-        INSTALL_CUDA: "true"
     # Persist the Cookbook-built llama.cpp binaries (~/bin) and source/build
     # tree (~/llama.cpp) across container recreates. Without this, every
     # `docker compose up -d --build` / image update wipes the compiled
@@ -43,11 +39,6 @@ services:
       - video
       - ${RENDER_GID:-render}
     environment:
-      - ROCM_PATH=/opt/rocm
-      - HIP_PATH=/opt/rocm
-      - HIPCXX=/opt/rocm/llvm/bin/clang++
-      - CXXFLAGS=-Wno-narrowing -Wno-c++11-narrowing
-      - HIPCXXFLAGS=-Wno-narrowing -Wno-c++11-narrowing
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       # Passed through so cookbook_helpers.py's _rocm_llama_cpp_repo() can see

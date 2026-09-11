@@ -258,16 +258,16 @@ For NVIDIA/AMD GPU support, also read the comments in the selected overlay file:
 **Stack-management UIs (Portainer, Coolify, Dockhand, etc.).** These tools
 often accept only a single Compose file and do not reliably honor `COMPOSE_FILE`
 or multiple `-f` overlays. CLI users should keep using the `COMPOSE_FILE`
-overlay workflow above. For stack UIs, point the stack at one of the standalone
-files instead, which bundle the base stack plus the GPU settings:
-
-- `docker-compose.gpu-nvidia.yml` — still requires the NVIDIA Container Toolkit
-  on the host.
-- `docker-compose.gpu-amd.yml` — still requires host ROCm/kfd/DRI setup, the
-  `video`/`render` group membership, and `RENDER_GID` when needed.
-
-The base `docker-compose.yml` plus the `docker/gpu.*.yml` overlays remain the
-source of truth; the standalone files mirror them for single-file deployments.
+overlay workflow above. For a stack UI, copy the relevant `devices:`/
+`group_add:`/`environment:`/`deploy:` block from the chosen overlay
+(`docker/gpu.nvidia.yml`, `docker/gpu.amd.yml`, or `docker/gpu.amd-nvidia.yml`)
+directly into `docker-compose.yml` under the `odysseus` service — there is only
+one Dockerfile/image (it stays slim, no GPU toolchain baked in), so no
+separate build variant is needed either way. For a stack UI, the sidecar
+pattern (see "GPU Support" in README.md) is usually simpler still: add the
+`llama-rocm` / `llama-cuda` service block to the same file and register its
+URL as a Model Endpoint — no device passthrough on the `odysseus` service
+itself needed at all.
 
 Verify after enabling either overlay:
 
