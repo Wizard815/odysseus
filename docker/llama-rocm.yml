@@ -1,77 +1,41 @@
-# AMD gfx906 (MI50/MI60/Radeon VII) llama.cpp server sidecar.
+# AMD gfx906 (MI50/MI60/Radeon VII) llama.cpp GPU sidecar.
 #
-# This is the recommended way to serve GGUF models on gfx906: a prebuilt,
-# hardware-tuned llama-server (custom SGEMM/RoPE/MMQ kernels for gfx906,
-# built on ROCm 10) running as its own container, next to Odysseus rather
-# than compiled inside it. Faster to start, no first-serve compile wait, and
-# keeps the Odysseus image free of GPU toolchains.
-#   https://hub.docker.com/r/zenth815/mx-llama-rocm10-gfx906
+# Runs the gfx906-tuned llama-server from zenth815/mx-llama-rocm10-gfx906
+# (custom SGEMM/RoPE/MMQ kernels, built on ROCm 10) plus an SSH server, so
+# Cookbook's own SSH-remote-exec machinery can drive it exactly like any
+# other remote target -- GGUF picker, Launch/Stop/Reload, every Advanced
+# flag, tmux-tracked lifecycle. Nothing here is Cookbook-blind.
 #
 # Enable by setting COMPOSE_FILE in .env:
 #   COMPOSE_FILE=docker-compose.yml:docker/llama-rocm.yml
 #   RENDER_GID=<output of: getent group render | cut -d: -f3>
 #
-# Runs llama-server in ROUTER MODE (--models-dir), not a fixed -m model --
-# confirmed present in this image's /app/llama-server --help:
-#   --models-dir, --models-preset, --models-max, --models-autoload,
-#   --sleep-idle-seconds
-# Drop .gguf files into LLAMA_ROCM_MODELS_DIR (default ./data/llama-models)
-# and the server lists/autoloads them by filename -- no fixed model baked
-# into this compose file, and no separate Cookbook download/serve step
-# needed. --sleep-idle-seconds is the idle timer (there is no such setting
-# inside Odysseus/Cookbook's own UI -- this sidecar isn't Cookbook-managed,
-# it's a standalone container Odysseus only talks HTTP to, so the idle
-# timer lives here as a CLI flag, default disabled via LLAMA_ROCM_IDLE_SECONDS).
+# "Local" + ROCm in Cookbook's Launch screen transparently redirects here
+# when ODYSSEUS_LOCAL_LLAMA_ROCM_HOST is set (see model_serve() in
+# routes/cookbook_routes.py) -- set it to root@llama-rocm in .env to make
+# that work without touching a saved remote-server entry:
+#   ODYSSEUS_LOCAL_LLAMA_ROCM_HOST=root@llama-rocm
 #
-# Register it in Odysseus as a Model Endpoint: base_url
-# http://llama-rocm:8080/v1, no API key. Whatever model name the chat
-# request specifies is what the router loads/routes to.
-#
-# NOT independently verified against real gfx906 hardware: whether -ngl/-fa/
-# -sm below apply as defaults to every router-loaded model, or only to a
-# single fixed -m launch. If a loaded model doesn't pick up GPU offload,
-# switch to --models-preset (an INI file with per-model overrides) instead
-# of these global flags -- see --models-preset in `llama-server --help`.
+# Requires Cookbook's own SSH key to already exist before this container
+# first starts (Cookbook -> Settings -> generate SSH key) -- its pubkey is
+# what gets trusted below. The huggingface cache dir is the SAME host
+# directory Odysseus itself uses, so whatever Cookbook downloads locally is
+# immediately visible here too, at the same path -- no separate download step.
 services:
   llama-rocm:
     container_name: llama-rocm
-    image: zenth815/mx-llama-rocm10-gfx906:latest
+    build:
+      context: .
+      dockerfile: docker/llama-rocm-ssh.Dockerfile
     restart: unless-stopped
-    # ipc=host + these two relaxations are what the image's own published
-    # run command requires — ROCm's HSA runtime needs them for shared-memory
-    # IPC between its kernel-mode driver and userspace.
-    ipc: host
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - seccomp:unconfined
     devices:
       - /dev/kfd
       - /dev/dri
     group_add:
       - video
       - ${RENDER_GID:-render}
-    ports:
-      - "${LLAMA_ROCM_BIND:-127.0.0.1}:${LLAMA_ROCM_PORT:-8090}:8080"
     volumes:
-      - ${LLAMA_ROCM_MODELS_DIR:-./data/llama-models}:/models
+      - ${APP_DATA_DIR:-./data}/ssh/id_ed25519.pub:/run/secrets/cookbook_ssh_pubkey:ro
+      - ${APP_DATA_DIR:-./data}/huggingface:/app/.cache/huggingface:z
     environment:
       - HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
-    command:
-      - --models-dir
-      - /models
-      - --models-max
-      - "${LLAMA_ROCM_MODELS_MAX:-2}"
-      - --models-autoload
-      - --sleep-idle-seconds
-      - "${LLAMA_ROCM_IDLE_SECONDS:--1}"
-      - -ngl
-      - "99"
-      - -fa
-      - "1"
-      - -sm
-      - layer
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8080"

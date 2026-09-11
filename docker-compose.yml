@@ -71,6 +71,13 @@ services:
       - OAUTH_REDIRECT_BASE_URL=${OAUTH_REDIRECT_BASE_URL:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
+      # When docker/llama-rocm.yml / docker/llama-cuda.yml is enabled via
+      # COMPOSE_FILE, set these to route Cookbook's "Local" + ROCm/CUDA serve
+      # to that sidecar over SSH instead of running (or failing to run) in
+      # this container -- see model_serve() in routes/cookbook_routes.py.
+      # Unset (default) = "Local" stays genuinely local for every backend.
+      - ODYSSEUS_LOCAL_LLAMA_ROCM_HOST=${ODYSSEUS_LOCAL_LLAMA_ROCM_HOST:-}
+      - ODYSSEUS_LOCAL_LLAMA_CUDA_HOST=${ODYSSEUS_LOCAL_LLAMA_CUDA_HOST:-}
       # PUID / PGID — the user/group the container drops to before
       # running uvicorn (entrypoint also chowns /app/data + /app/logs
       # to match, so bind-mounted files stay editable from the host).

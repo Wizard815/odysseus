@@ -1,8 +1,9 @@
-# NVIDIA GPU llama.cpp server sidecar, using the official upstream CUDA image
-# (no custom build needed — NVIDIA is officially supported by mainline
-# llama.cpp). Same pattern as docker/llama-rocm.yml: runs as its own
-# container next to Odysseus rather than compiled inside it.
-#   https://github.com/ggml-org/llama.cpp/blob/master/docs/docker.md
+# NVIDIA llama.cpp GPU sidecar, using the official upstream CUDA image
+# (no custom build needed -- NVIDIA is officially supported by mainline
+# llama.cpp) plus an SSH server, so Cookbook's own SSH-remote-exec machinery
+# can drive it exactly like any other remote target -- GGUF picker,
+# Launch/Stop/Reload, every Advanced flag, tmux-tracked lifecycle. Nothing
+# here is Cookbook-blind.
 #
 # Requires the NVIDIA Container Toolkit on the host (see docker/gpu.nvidia.yml
 # for install steps).
@@ -10,29 +11,27 @@
 # Enable by setting COMPOSE_FILE in .env:
 #   COMPOSE_FILE=docker-compose.yml:docker/llama-cuda.yml
 #
-# Runs llama-server in ROUTER MODE (--models-dir), not a fixed -m model --
-# confirmed present in this image's /app/llama-server --help (same flags as
-# docker/llama-rocm.yml): --models-dir, --models-preset, --models-max,
-# --models-autoload, --sleep-idle-seconds. Drop .gguf files into
-# LLAMA_CUDA_MODELS_DIR (default ./data/llama-models) and the server
-# lists/autoloads them by filename -- no fixed model baked into this compose
-# file. --sleep-idle-seconds is the idle timer; there is no such setting
-# inside Odysseus/Cookbook's own UI since this sidecar isn't Cookbook-managed
-# -- it's a standalone container Odysseus only talks HTTP to, so the idle
-# timer lives here as a CLI flag (default disabled via LLAMA_CUDA_IDLE_SECONDS).
+# "Local" + CUDA in Cookbook's Launch screen transparently redirects here
+# when ODYSSEUS_LOCAL_LLAMA_CUDA_HOST is set (see model_serve() in
+# routes/cookbook_routes.py) -- set it to root@llama-cuda in .env to make
+# that work without touching a saved remote-server entry:
+#   ODYSSEUS_LOCAL_LLAMA_CUDA_HOST=root@llama-cuda
 #
-# Register it in Odysseus as a Model Endpoint: base_url
-# http://llama-cuda:8080/v1, no API key. Whatever model name the chat
-# request specifies is what the router loads/routes to.
+# Requires Cookbook's own SSH key to already exist before this container
+# first starts (Cookbook -> Settings -> generate SSH key) -- its pubkey is
+# what gets trusted below. The huggingface cache dir is the SAME host
+# directory Odysseus itself uses, so whatever Cookbook downloads locally is
+# immediately visible here too, at the same path -- no separate download step.
 services:
   llama-cuda:
     container_name: llama-cuda
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    build:
+      context: .
+      dockerfile: docker/llama-cuda-ssh.Dockerfile
     restart: unless-stopped
-    ports:
-      - "${LLAMA_CUDA_BIND:-127.0.0.1}:${LLAMA_CUDA_PORT:-8091}:8080"
     volumes:
-      - ${LLAMA_CUDA_MODELS_DIR:-./data/llama-models}:/models
+      - ${APP_DATA_DIR:-./data}/ssh/id_ed25519.pub:/run/secrets/cookbook_ssh_pubkey:ro
+      - ${APP_DATA_DIR:-./data}/huggingface:/app/.cache/huggingface:z
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -43,17 +42,3 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    command:
-      - --models-dir
-      - /models
-      - --models-max
-      - "${LLAMA_CUDA_MODELS_MAX:-2}"
-      - --models-autoload
-      - --sleep-idle-seconds
-      - "${LLAMA_CUDA_IDLE_SECONDS:--1}"
-      - -ngl
-      - "99"
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8080"

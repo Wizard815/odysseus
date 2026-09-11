@@ -1970,6 +1970,21 @@ def setup_cookbook_routes() -> APIRouter:
         a fake org/name wrapper.
         """
         require_admin(request)
+        # "Local" + GPU inference transparently becomes a remote-exec against
+        # the GPU sidecar container (docker/llama-rocm.yml / llama-cuda.yml),
+        # if one is configured for that backend via env var. Only applies when
+        # the frontend's GPU probe picked a backend AND the caller didn't
+        # already name a remote host explicitly (a saved remote server target
+        # still wins) — everything else Cookbook does (other engines, deps
+        # installs, CPU serving) stays genuinely local, untouched.
+        if not req.remote_host and req.gpu_backend:
+            _sidecar_host = None
+            if req.gpu_backend in ("rocm", "rocm-gcn"):
+                _sidecar_host = os.environ.get("ODYSSEUS_LOCAL_LLAMA_ROCM_HOST")
+            elif req.gpu_backend == "cuda":
+                _sidecar_host = os.environ.get("ODYSSEUS_LOCAL_LLAMA_CUDA_HOST")
+            if _sidecar_host:
+                req.remote_host = _sidecar_host
         # Defence-in-depth: reject values that could break out of shell contexts.
         validate_remote_host(req.remote_host)
         req.ssh_port = validate_ssh_port(req.ssh_port)
