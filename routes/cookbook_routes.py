@@ -3401,9 +3401,13 @@ def setup_cookbook_routes() -> APIRouter:
         cmd = (
             'export PATH="$HOME/.local/bin:$HOME/bin:$HOME/llama.cpp/build/bin:'
             '/opt/homebrew/bin:/usr/local/bin:$PATH"; '
-            'command -v llama-server >/dev/null 2>&1 '
-            '&& llama-server --help 2>&1 '
-            '|| echo __NO_LLAMA_SERVER__'
+            'if command -v llama-server >/dev/null 2>&1; then B=llama-server; '
+            # SSH GPU sidecars (docker/llama-*-ssh.Dockerfile) invoke the base
+            # image's llama-server by this fixed absolute path; a fork's sidecar
+            # image may not also symlink it onto PATH the way ours does.
+            'elif [ -x /app/llama-server ]; then B=/app/llama-server; '
+            'else echo __NO_LLAMA_SERVER__; exit 0; fi; '
+            '"$B" --help 2>&1'
         )
         out, err = await _run_gpu_shell(cmd, host, ssh_port, timeout=10)
         if err is not None or not out or "__NO_LLAMA_SERVER__" in out:
