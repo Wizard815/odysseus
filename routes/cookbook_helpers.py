@@ -758,18 +758,30 @@ def _parse_llama_cache_types(help_text: str) -> list[str]:
     that adds a new ggml_type (e.g. a vendor-specific quant) surfaces it here
     automatically — no per-fork parsing rules needed. Scans a few lines after
     the flag since --help wraps the "allowed values:" line separately rather
-    than putting it on the same line as the flag itself.
+    than putting it on the same line as the flag itself, and a long list
+    (many fork-added types) can wrap again onto further plain continuation
+    lines with no "allowed values:" prefix of their own — appended until a
+    line that looks like the next flag, a "(default: ...)" line, or a blank
+    line closes the list. Matches "--cache-type-k" but not the sibling
+    "--cache-type-k-draft" (speculative-decoding draft model's KV cache).
     """
     if not help_text:
         return []
     lines = help_text.splitlines()
     for i, line in enumerate(lines):
-        if "--cache-type-k" in line or "--cache-type-v" in line:
-            for follow in lines[i:i + 6]:
-                m = re.search(r"allowed values:\s*(.+)", follow, re.I)
-                if m:
-                    values = [v.strip().rstrip(",") for v in m.group(1).split(",")]
-                    return [v for v in values if v]
+        if re.search(r"--cache-type-[kv](?!-draft)\b", line):
+            for j in range(i, min(i + 6, len(lines))):
+                m = re.search(r"allowed values:\s*(.+)", lines[j], re.I)
+                if not m:
+                    continue
+                collected = [m.group(1)]
+                for k in range(j + 1, min(j + 6, len(lines))):
+                    nxt = lines[k].strip()
+                    if not nxt or nxt.startswith("(default") or re.match(r"^-{1,2}\S", nxt):
+                        break
+                    collected.append(nxt)
+                values = [v.strip().rstrip(",") for v in ",".join(collected).split(",")]
+                return [v for v in values if v]
     return []
 
 
