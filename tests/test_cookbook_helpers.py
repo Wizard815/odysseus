@@ -747,7 +747,7 @@ def test_llama_cpp_linux_bootstrap_nvcc_without_cudart_warns_and_falls_back():
     # The CPU-only cmake fallback must appear inside the nvcc branch (before the
     # outer else that handles no-GPU-toolchain). Verify it appears at least once
     # before the outer "no HIP/CUDA toolchain" warning.
-    cpu_cmake = 'cmake -B build -DCMAKE_BUILD_TYPE=Release &&'
+    cpu_cmake = 'cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF'
     no_toolchain_warn = 'WARNING: no HIP/CUDA/Vulkan toolchain found'
     assert cpu_cmake in script
     assert script.index(cpu_cmake) < script.index(no_toolchain_warn)
