@@ -1647,7 +1647,15 @@ function _rerenderCachedModels() {
       // regardless of the label's own classes, since a display:none
       // ancestor hides descendants no matter what they're tagged with.
       panelHtml += `<div class="hwfit-serve-row hwfit-backend-vllm hwfit-backend-sglang hwfit-backend-llamacpp">`;
-      panelHtml += `<label class="hwfit-extra-env-label" style="grid-column: 1 / -1;">${_l('Env','Extra KEY=VALUE env-var pairs prepended to the launch (space-separated). For llama.cpp this is where fork-specific flags like GGML_ENABLE_CUSTOM_AR=1 go.')}<input type="text" class="hwfit-sf" data-field="extra_env" value="${esc(svm('extra_env', sv('extra_env','')))}" placeholder="NCCL_P2P_DISABLE=1 GGML_ENABLE_CUSTOM_AR=1" style="width:100%;" /></label>`;
+      // Deliberately NOT falling through to sv('extra_env', ...) (the
+      // cross-model "last used" convenience default other fields get) —
+      // custom env-var flags are almost always specific to one model's
+      // hardware/fork experiment, not a sensible default to hand every
+      // other model that hasn't been configured yet. A saved value for
+      // THIS model (svm) still applies; only the global last-used fallback
+      // is excluded. See the GPU_MAX_HW_QUEUES=8-leaking-into-every-model
+      // incident this was born from.
+      panelHtml += `<label class="hwfit-extra-env-label" style="grid-column: 1 / -1;">${_l('Env','Extra KEY=VALUE env-var pairs prepended to the launch (space-separated). For llama.cpp this is where fork-specific flags like GGML_ENABLE_CUSTOM_AR=1 go.')}<input type="text" class="hwfit-sf" data-field="extra_env" value="${esc(svm('extra_env', ''))}" placeholder="NCCL_P2P_DISABLE=1 GGML_ENABLE_CUSTOM_AR=1" style="width:100%;" /></label>`;
       panelHtml += `</div>`;
       // Row 2b: Diffusers settings
       const diffDefaultNegative = 'low quality, blurry, out of focus, deformed, distorted, disfigured, unfinished, smudged, watermark, artifacts';
@@ -2163,12 +2171,11 @@ function _rerenderCachedModels() {
         const sel = panel.querySelector('select[data-field="cache_type"]');
         if (!sel) return;
         try {
-          const host = (_es.remoteHost || '').trim();
+          const target = _selectedServeTarget(panel);
           const params = new URLSearchParams();
-          if (host) {
-            params.set('host', host);
-            const _sp = (_es.servers || []).find(s => s.host === host)?.port;
-            if (_sp) params.set('ssh_port', _sp);
+          if (target.host) {
+            params.set('host', target.host);
+            if (target.port) params.set('ssh_port', target.port);
           }
           const res = await fetch('/api/cookbook/llama-cache-types' + (params.toString() ? '?' + params : ''), { credentials: 'same-origin' });
           const data = await res.json();
@@ -2523,6 +2530,58 @@ function _rerenderCachedModels() {
         panel.querySelector(`.cookbook-slot-btn[data-slot="${slotIdx}"]`)?.classList.add('active');
       }
 
+      // Save the current form as this model's baseline default — the config
+      // that pre-populates the panel before any named Preset is picked.
+      // Mirrors the { _byRepo, _forceBackend } write Launch already does
+      // (see the launch handler below), minus the port probe / actual
+      // server start, and deliberately does NOT touch `_lastUsed`.
+      async function _saveAsDefault() {
+        if (!_cmdManuallyEdited) updateCmd();
+        const cmdBox = panel.querySelector('.hwfit-serve-cmd');
+        const cmd = _normalizeServeCmdForLaunch((_cmdManuallyEdited && cmdBox) ? cmdBox.value : panel._cmd);
+        const fields = {};
+        panel.querySelectorAll('.hwfit-sf').forEach(el => {
+          if (el.type === 'checkbox') fields[el.dataset.field] = el.checked;
+          else fields[el.dataset.field] = el.value;
+        });
+        fields.backend = fields.backend || _detectBackend(m).backend || 'vllm';
+        if (_cmdManuallyEdited) fields._manual_cmd = cmd;
+        else delete fields._manual_cmd;
+        try {
+          let cur = {};
+          try { cur = JSON.parse(localStorage.getItem(SERVE_STATE_KEY)) || {}; } catch {}
+          const byRepo = (cur && cur._byRepo && typeof cur._byRepo === 'object') ? cur._byRepo : {};
+          byRepo[repo] = { ...fields, _forceBackend: true };
+          localStorage.setItem(SERVE_STATE_KEY, JSON.stringify(_redactServeStateForStorage({ ...cur, _byRepo: byRepo })));
+          uiModule.showToast(`Saved as default for ${_repoShort}`);
+        } catch (e) {
+          uiModule.showToast('Could not save default — see console for details');
+          console.error(e);
+        }
+      }
+
+      // Clear this model's saved default. Only removes the { _byRepo }
+      // entry for this repo — named Presets and `_lastUsed` are untouched.
+      async function _clearDefault() {
+        const proceed = await window.styledConfirm(
+          `Clear the saved default launch config for ${_repoShort}? Saved Presets aren't affected — this only resets what shows before you pick one.`,
+          { title: 'Clear Default', confirmText: 'Clear', cancelText: 'Cancel', danger: true },
+        );
+        if (!proceed) return;
+        try {
+          let cur = {};
+          try { cur = JSON.parse(localStorage.getItem(SERVE_STATE_KEY)) || {}; } catch {}
+          if (cur._byRepo && Object.prototype.hasOwnProperty.call(cur._byRepo, repo)) {
+            delete cur._byRepo[repo];
+            localStorage.setItem(SERVE_STATE_KEY, JSON.stringify(cur));
+          }
+          uiModule.showToast(`Default cleared for ${_repoShort} — reopen Serve to see it reset`);
+        } catch (e) {
+          uiModule.showToast('Could not clear default — see console for details');
+          console.error(e);
+        }
+      }
+
       // Keep the arrow button's count + tooltip in sync with stored presets.
       function _updateSavedToggleLabel() {
         const n = _presetsForModel(_loadPresets(), repo).length;
@@ -2790,6 +2849,8 @@ function _rerenderCachedModels() {
               : _formatServeCmdPreview(panel._cmd || cmdBox?.value || '');
             _copyText(cmd).then(() => uiModule.showToast('Launch command copied'));
           }));
+          menu.appendChild(mk('Save Default', '', () => { _saveAsDefault(); }));
+          menu.appendChild(mk('Clear Default', 'cookbook-dropdown-danger', () => { _clearDefault(); }));
           menu.appendChild(mk('Schedule', '', () => {
             const direct = new MouseEvent('click', { bubbles: true, cancelable: true });
             direct.__openScheduleDirect = true;
