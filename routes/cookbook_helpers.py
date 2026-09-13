@@ -751,6 +751,28 @@ def _ollama_bind_from_cmd(cmd: str | None, *, default_host: str = "127.0.0.1") -
     return f"[{host}]" if bracketed_host else host, port
 
 
+def _parse_llama_cache_types(help_text: str) -> list[str]:
+    """Extract the --cache-type-k/-v allowed values from `llama-server --help`.
+
+    The choices come straight from llama.cpp's shared arg parser, so a fork
+    that adds a new ggml_type (e.g. a vendor-specific quant) surfaces it here
+    automatically — no per-fork parsing rules needed. Scans a few lines after
+    the flag since --help wraps the "allowed values:" line separately rather
+    than putting it on the same line as the flag itself.
+    """
+    if not help_text:
+        return []
+    lines = help_text.splitlines()
+    for i, line in enumerate(lines):
+        if "--cache-type-k" in line or "--cache-type-v" in line:
+            for follow in lines[i:i + 6]:
+                m = re.search(r"allowed values:\s*(.+)", follow, re.I)
+                if m:
+                    values = [v.strip().rstrip(",") for v in m.group(1).split(",")]
+                    return [v for v in values if v]
+    return []
+
+
 def _normalize_llama_cpp_python_cache_types(cmd: str | None) -> str | None:
     """Map llama.cpp KV cache type names to llama-cpp-python's integer enum."""
     if not cmd or "llama_cpp.server" not in cmd:
