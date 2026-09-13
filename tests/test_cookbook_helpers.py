@@ -680,6 +680,37 @@ def test_parse_llama_cache_types_returns_empty_when_flag_absent():
     assert _parse_llama_cache_types("") == []
 
 
+def test_parse_llama_cache_types_handles_wrapped_continuation_line():
+    # Real llama-server --help output: a long allowed-values list (many
+    # fork-added types) wraps onto a further plain continuation line with
+    # no "allowed values:" prefix of its own.
+    help_text = (
+        "-ctk,  --cache-type-k TYPE              KV cache data type for K\n"
+        "                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1,\n"
+        "                                        turbo2, turbo3, turbo4\n"
+        "--\n"
+        "--spec-draft-type-k, -ctkd, --cache-type-k-draft TYPE\n"
+        "                                        KV cache data type for K for the draft model\n"
+        "                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1,\n"
+    )
+    assert _parse_llama_cache_types(help_text) == [
+        "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+        "turbo2", "turbo3", "turbo4",
+    ]
+
+
+def test_parse_llama_cache_types_ignores_draft_model_cache_flag():
+    # --cache-type-k-draft contains "--cache-type-k" as a substring — must not
+    # be mistaken for the real flag even when it appears first in the text.
+    help_text = (
+        "--cache-type-k-draft TYPE     KV cache data type for K for the draft model\n"
+        "                              allowed values: q4_0, q8_0\n"
+        "-ctk, --cache-type-k TYPE     KV cache data type for K\n"
+        "                              allowed values: f16, q8_0, turbo\n"
+    )
+    assert _parse_llama_cache_types(help_text) == ["f16", "q8_0", "turbo"]
+
+
 def test_model_serve_normalizes_llama_cpp_python_cache_types_after_validation():
     src = (Path(__file__).resolve().parents[1] / "routes" / "cookbook_routes.py").read_text(encoding="utf-8")
 

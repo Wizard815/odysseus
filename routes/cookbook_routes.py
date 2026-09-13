@@ -3398,7 +3398,7 @@ def setup_cookbook_routes() -> APIRouter:
         require_admin(request)
         host = validate_remote_host(host)
         ssh_port = validate_ssh_port(ssh_port)
-        cmd = (
+        remote_cmd = (
             'export PATH="$HOME/.local/bin:$HOME/bin:$HOME/llama.cpp/build/bin:'
             '/opt/homebrew/bin:/usr/local/bin:$PATH"; '
             'if command -v llama-server >/dev/null 2>&1; then B=llama-server; '
@@ -3409,9 +3409,27 @@ def setup_cookbook_routes() -> APIRouter:
             'else echo __NO_LLAMA_SERVER__; exit 0; fi; '
             '"$B" --help 2>&1'
         )
-        out, err = await _run_gpu_shell(cmd, host, ssh_port, timeout=10)
-        if err is not None or not out or "__NO_LLAMA_SERVER__" in out:
-            return {"ok": False, "cache_types": [], "error": err or "native llama-server not found on PATH"}
+        try:
+            if host:
+                code, stdout_b, stderr_b = await run_ssh_command_async(
+                    host, ssh_port, remote_cmd,
+                    timeout=10, connect_timeout=5, strict_host_key_checking=False,
+                )
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    remote_cmd,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=10)
+                code = proc.returncode or 0
+        except asyncio.TimeoutError:
+            return {"ok": False, "cache_types": [], "error": "Timed out probing llama-server --help"}
+        except Exception as e:
+            return {"ok": False, "cache_types": [], "error": str(e)[:200]}
+        out = stdout_b.decode("utf-8", errors="replace")
+        err_text = stderr_b.decode("utf-8", errors="replace").strip()[:200]
+        if code != 0 or not out or "__NO_LLAMA_SERVER__" in out:
+            return {"ok": False, "cache_types": [], "error": err_text or f"probe exited with code {code}"}
         cache_types = _parse_llama_cache_types(out)
         if not cache_types:
             return {"ok": False, "cache_types": [], "error": "Could not find --cache-type-k in --help output"}
