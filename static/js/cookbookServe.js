@@ -2152,6 +2152,41 @@ function _rerenderCachedModels() {
         if (ok === false) clearInterval(_vramTimer);
       }, 4000);
 
+      // The hardcoded KV Cache options above (q4_0/q8_0/f16) render instantly
+      // with no round-trip, but are only the common subset. Once the panel is
+      // up, ask the connected host what its native llama-server binary
+      // actually supports (parsed server-side from --help) and extend the
+      // dropdown with anything else it reports — picks up fork-specific quant
+      // types (e.g. a vendor's custom cache type) with no Odysseus code change.
+      // One-shot: a binary's supported types don't change while the panel is open.
+      (async function _refreshLlamaCacheTypes() {
+        const sel = panel.querySelector('select[data-field="cache_type"]');
+        if (!sel) return;
+        try {
+          const host = (_es.remoteHost || '').trim();
+          const params = new URLSearchParams();
+          if (host) {
+            params.set('host', host);
+            const _sp = (_es.servers || []).find(s => s.host === host)?.port;
+            if (_sp) params.set('ssh_port', _sp);
+          }
+          const res = await fetch('/api/cookbook/llama-cache-types' + (params.toString() ? '?' + params : ''), { credentials: 'same-origin' });
+          const data = await res.json();
+          if (!data.ok || !Array.isArray(data.cache_types) || !data.cache_types.length) return;
+          const current = sel.value;
+          const known = new Set(Array.from(sel.options).map(o => o.value));
+          for (const t of data.cache_types) {
+            if (!t || known.has(t)) continue;
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t;
+            sel.appendChild(opt);
+            known.add(t);
+          }
+          if (current) sel.value = current;
+        } catch { /* host unreachable/offline — keep the hardcoded fallback list */ }
+      })();
+
       // Backend icons — accent color, rendered via currentColor. vLLM gets
       // a stylized double-V mark, the others fall back to a recognizable
       // glyph for the engine family. Shown beside each option in the
