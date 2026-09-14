@@ -1804,8 +1804,13 @@ function _rerenderCachedModels() {
       // the vLLM-only toggles sit next to Prefix Caching with no gap.
       // Extra args sits below the vLLM checks (Reasoning Parser + Spec)
       // so it reads as "after the advanced toggles, any other flags".
+      // Same cross-model leak sv('extra_env', ...) had: raw extra flags
+      // (-cram, --jinja, sampler settings, etc.) are model/hardware-specific,
+      // not a sensible default to hand every other unconfigured model via
+      // the shared _lastUsed fallback. Only this model's own saved value
+      // applies; Clear Default now actually clears this field too.
       panelHtml += `<div class="hwfit-serve-extra">`;
-      panelHtml += `<label>Extra args<input type="text" class="hwfit-sf" data-field="extra" value="${esc(sv('extra', ''))}" placeholder="--flag value" /></label>`;
+      panelHtml += `<label>Extra args<input type="text" class="hwfit-sf" data-field="extra" value="${esc(svm('extra', ''))}" placeholder="--flag value" /></label>`;
       panelHtml += `</div>`;
       // ── End Advanced fold ──
       panelHtml += `</details>`;
