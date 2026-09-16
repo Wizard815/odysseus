@@ -28,4 +28,13 @@ COPY docker/llama-ssh-entrypoint.sh /usr/local/bin/llama-ssh-entrypoint.sh
 RUN chmod +x /usr/local/bin/llama-ssh-entrypoint.sh
 
 EXPOSE 22
+
+# Override the base image's inherited healthcheck (curl localhost:8080/health)
+# -- that assumes llama-server is always running one fixed model. Here it
+# only runs when Cookbook launches it over SSH on demand, so an idle sidecar
+# with nothing currently served would otherwise report unhealthy forever.
+# sshd being reachable is the actual liveness signal for this container's role.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+    CMD bash -c 'echo > /dev/tcp/127.0.0.1/22' || exit 1
+
 ENTRYPOINT ["/usr/local/bin/llama-ssh-entrypoint.sh"]
