@@ -59,7 +59,7 @@ from routes.cookbook_helpers import (
     _ollama_bind_from_cmd, _pip_install_fallback_chain, _pip_install_no_cache,
     _user_shell_path_bootstrap, _venv_safe_local_pip_install_cmd,
     _append_pip_install_runner_lines, _pip_install_command_without_break_system_packages,
-    _normalize_llama_cpp_python_cache_types,
+    _normalize_llama_cpp_python_cache_types, _parse_llama_cache_types,
     ModelDownloadRequest, ServeRequest,
 )
 
@@ -3382,6 +3382,58 @@ def setup_cookbook_routes() -> APIRouter:
             }
 
         return {"ok": False, "error": nvidia_error or "No GPU memory probe available", "gpus": []}
+
+    @router.get("/api/cookbook/llama-cache-types")
+    async def llama_cache_types(request: Request, host: str | None = None, ssh_port: str | None = None):
+        """Discover the KV cache quant types the host's native llama-server
+        binary actually supports, by parsing its own --help output.
+
+        The Cookbook UI's KV Cache dropdown hardcodes a common subset
+        (q4_0/q8_0/f16) so it renders instantly with no round-trip. This
+        endpoint lets the frontend extend that list with whatever a
+        particular build/fork actually ships — including vendor-specific
+        quant types that aren't in the hardcoded set — without needing an
+        Odysseus code change per fork.
+        """
+        require_admin(request)
+        host = validate_remote_host(host)
+        ssh_port = validate_ssh_port(ssh_port)
+        remote_cmd = (
+            'export PATH="$HOME/.local/bin:$HOME/bin:$HOME/llama.cpp/build/bin:'
+            '/opt/homebrew/bin:/usr/local/bin:$PATH"; '
+            'if command -v llama-server >/dev/null 2>&1; then B=llama-server; '
+            # SSH GPU sidecars (docker/llama-*-ssh.Dockerfile) invoke the base
+            # image's llama-server by this fixed absolute path; a fork's sidecar
+            # image may not also symlink it onto PATH the way ours does.
+            'elif [ -x /app/llama-server ]; then B=/app/llama-server; '
+            'else echo __NO_LLAMA_SERVER__; exit 0; fi; '
+            '"$B" --help 2>&1'
+        )
+        try:
+            if host:
+                code, stdout_b, stderr_b = await run_ssh_command_async(
+                    host, ssh_port, remote_cmd,
+                    timeout=10, connect_timeout=5, strict_host_key_checking=False,
+                )
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    remote_cmd,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=10)
+                code = proc.returncode or 0
+        except asyncio.TimeoutError:
+            return {"ok": False, "cache_types": [], "error": "Timed out probing llama-server --help"}
+        except Exception as e:
+            return {"ok": False, "cache_types": [], "error": str(e)[:200]}
+        out = stdout_b.decode("utf-8", errors="replace")
+        err_text = stderr_b.decode("utf-8", errors="replace").strip()[:200]
+        if code != 0 or not out or "__NO_LLAMA_SERVER__" in out:
+            return {"ok": False, "cache_types": [], "error": err_text or f"probe exited with code {code}"}
+        cache_types = _parse_llama_cache_types(out)
+        if not cache_types:
+            return {"ok": False, "cache_types": [], "error": "Could not find --cache-type-k in --help output"}
+        return {"ok": True, "cache_types": cache_types}
 
     class KillPidRequest(BaseModel):
         pid: int

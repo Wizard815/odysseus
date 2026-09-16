@@ -24,6 +24,7 @@ from routes.cookbook_helpers import (
     _user_shell_path_bootstrap,
     _venv_safe_local_pip_install_cmd,
     _normalize_llama_cpp_python_cache_types,
+    _parse_llama_cache_types,
     _validate_gpus,
     _validate_local_dir,
     _validate_repo_id,
@@ -650,6 +651,66 @@ def test_normalize_llama_cpp_python_cache_types_preserves_native_cache_flags():
     assert "--type_v='1'" in normalized
 
 
+def test_parse_llama_cache_types_extracts_allowed_values():
+    help_text = (
+        "  -ctk, --cache-type-k TYPE\n"
+        "                                KV cache data type for K\n"
+        "                                allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1\n"
+        "                                (default: f16)\n"
+        "  -ctv, --cache-type-v TYPE\n"
+        "                                KV cache data type for V\n"
+    )
+    assert _parse_llama_cache_types(help_text) == [
+        "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+    ]
+
+
+def test_parse_llama_cache_types_picks_up_fork_specific_values():
+    # A fork adding a custom ggml_type (e.g. a vendor quant) surfaces it here
+    # automatically since it comes from the same shared arg-parser help text.
+    help_text = (
+        "  -ctk, --cache-type-k TYPE     KV cache data type for K\n"
+        "                                allowed values: f16, q8_0, turbo\n"
+    )
+    assert _parse_llama_cache_types(help_text) == ["f16", "q8_0", "turbo"]
+
+
+def test_parse_llama_cache_types_returns_empty_when_flag_absent():
+    assert _parse_llama_cache_types("usage: llama-server [options]\n--help  show this text\n") == []
+    assert _parse_llama_cache_types("") == []
+
+
+def test_parse_llama_cache_types_handles_wrapped_continuation_line():
+    # Real llama-server --help output: a long allowed-values list (many
+    # fork-added types) wraps onto a further plain continuation line with
+    # no "allowed values:" prefix of its own.
+    help_text = (
+        "-ctk,  --cache-type-k TYPE              KV cache data type for K\n"
+        "                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1,\n"
+        "                                        turbo2, turbo3, turbo4\n"
+        "--\n"
+        "--spec-draft-type-k, -ctkd, --cache-type-k-draft TYPE\n"
+        "                                        KV cache data type for K for the draft model\n"
+        "                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1,\n"
+    )
+    assert _parse_llama_cache_types(help_text) == [
+        "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+        "turbo2", "turbo3", "turbo4",
+    ]
+
+
+def test_parse_llama_cache_types_ignores_draft_model_cache_flag():
+    # --cache-type-k-draft contains "--cache-type-k" as a substring — must not
+    # be mistaken for the real flag even when it appears first in the text.
+    help_text = (
+        "--cache-type-k-draft TYPE     KV cache data type for K for the draft model\n"
+        "                              allowed values: q4_0, q8_0\n"
+        "-ctk, --cache-type-k TYPE     KV cache data type for K\n"
+        "                              allowed values: f16, q8_0, turbo\n"
+    )
+    assert _parse_llama_cache_types(help_text) == ["f16", "q8_0", "turbo"]
+
+
 def test_model_serve_normalizes_llama_cpp_python_cache_types_after_validation():
     src = (Path(__file__).resolve().parents[1] / "routes" / "cookbook_routes.py").read_text(encoding="utf-8")
 
@@ -747,7 +808,7 @@ def test_llama_cpp_linux_bootstrap_nvcc_without_cudart_warns_and_falls_back():
     # The CPU-only cmake fallback must appear inside the nvcc branch (before the
     # outer else that handles no-GPU-toolchain). Verify it appears at least once
     # before the outer "no HIP/CUDA toolchain" warning.
-    cpu_cmake = 'cmake -B build -DCMAKE_BUILD_TYPE=Release &&'
+    cpu_cmake = 'cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF'
     no_toolchain_warn = 'WARNING: no HIP/CUDA/Vulkan toolchain found'
     assert cpu_cmake in script
     assert script.index(cpu_cmake) < script.index(no_toolchain_warn)
