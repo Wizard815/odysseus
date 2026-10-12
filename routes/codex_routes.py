@@ -35,6 +35,10 @@ CALENDAR_READ_SCOPES = {"calendar:read", "calendar:write"}
 CALENDAR_WRITE_SCOPES = {"calendar:write"}
 DOCS_READ_SCOPES = {"documents:read", "documents:write"}
 DOCS_WRITE_SCOPES = {"documents:write"}
+GALLERY_READ_SCOPES = {"gallery:read"}
+TASK_READ_SCOPES = {"tasks:read", "tasks:run"}
+TASK_RUN_SCOPES = {"tasks:run"}
+SKILL_READ_SCOPES = {"skills:read"}
 WRITE_ACTIONS = {"add", "create", "new", "save", "remind", "update", "delete", "toggle_item", "remove", "remove_item"}
 
 
@@ -150,6 +154,9 @@ def setup_codex_routes(
     memory_router: APIRouter | None = None,
     calendar_router: APIRouter | None = None,
     document_router: APIRouter | None = None,
+    gallery_router: APIRouter | None = None,
+    task_router: APIRouter | None = None,
+    skills_router: APIRouter | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/codex", tags=["codex"])
     email_list_endpoint = _find_endpoint(email_router, "GET", "/api/email/list")
@@ -163,6 +170,10 @@ def setup_codex_routes(
     documents_library_endpoint = _find_endpoint(document_router, "GET", "/api/documents/library")
     documents_get_endpoint = _find_endpoint(document_router, "GET", "/api/document/{doc_id}")
     documents_create_endpoint = _find_endpoint(document_router, "POST", "/api/document")
+    gallery_library_endpoint = _find_endpoint(gallery_router, "GET", "/api/gallery/library")
+    task_list_endpoint = _find_endpoint(task_router, "GET", "/api/tasks")
+    task_run_endpoint = _find_endpoint(task_router, "POST", "/api/tasks/{task_id}/run")
+    skills_list_endpoint = _find_endpoint(skills_router, "GET", "/api/skills")
 
     @router.get("/capabilities")
     def capabilities(request: Request):
@@ -207,6 +218,22 @@ def setup_codex_routes(
                     "read": scoped(COOKBOOK_READ_SCOPES),
                     "launch": scoped(COOKBOOK_LAUNCH_SCOPES),
                     "actions": ["tasks", "servers", "output", "serve", "stop"],
+                },
+                "gallery": {
+                    "read": scoped(GALLERY_READ_SCOPES),
+                    "actions": ["library"],
+                    "available": gallery_library_endpoint is not None,
+                },
+                "tasks": {
+                    "read": scoped(TASK_READ_SCOPES),
+                    "run": scoped(TASK_RUN_SCOPES),
+                    "actions": ["list", "run"],
+                    "available": task_list_endpoint is not None,
+                },
+                "skills": {
+                    "read": scoped(SKILL_READ_SCOPES),
+                    "actions": ["list"],
+                    "available": skills_list_endpoint is not None,
                 },
             },
             "safety": {
@@ -511,6 +538,44 @@ def setup_codex_routes(
         except Exception as exc:
             raise HTTPException(400, f"Invalid document payload: {exc}")
         return await _as_owner(request, owner, documents_create_endpoint, request, req)
+
+    # ── Gallery, scheduled tasks, skills ─────────────────────────────────
+    # Read-only views (plus "run now" for tasks) for external apps such as a
+    # model-launch dashboard. Each needs its own scope, so a token made for
+    # notes or documents cannot see images or trigger tasks.
+
+    @router.get("/gallery")
+    async def codex_gallery(request: Request, search: str | None = None, tag: str | None = None,
+                            offset: Any = 0, limit: Any = 48):
+        owner = _scope_owner(request, GALLERY_READ_SCOPES)
+        if gallery_library_endpoint is None:
+            raise HTTPException(503, "Gallery integration is not available")
+        offset, limit = _clamp_pagination(offset, limit, default_limit=48, max_limit=100)
+        return await _as_owner(request, owner, gallery_library_endpoint, request, search=search, tag=tag,
+                               model=None, album=None, favorites=False, sort="recent", seed=None,
+                               offset=offset, limit=limit)
+
+    @router.get("/tasks")
+    async def codex_tasks(request: Request, status: str | None = None):
+        owner = _scope_owner(request, TASK_READ_SCOPES)
+        if task_list_endpoint is None:
+            raise HTTPException(503, "Tasks integration is not available")
+        return await _as_owner(request, owner, task_list_endpoint, request, status=status, include_last_run=True)
+
+    @router.post("/tasks/{task_id}/run")
+    async def codex_task_run(request: Request, task_id: str):
+        owner = _scope_owner(request, TASK_RUN_SCOPES)
+        if task_run_endpoint is None:
+            raise HTTPException(503, "Tasks integration is not available")
+        # never force: a task that is already running answers 409, as in the UI
+        return await _as_owner(request, owner, task_run_endpoint, request, task_id, force=False)
+
+    @router.get("/skills")
+    async def codex_skills(request: Request):
+        owner = _scope_owner(request, SKILL_READ_SCOPES)
+        if skills_list_endpoint is None:
+            raise HTTPException(503, "Skills integration is not available")
+        return await _as_owner(request, owner, skills_list_endpoint, request)
 
     # ── Cookbook surface ──
     # Lets the agent run the same launch / monitor / kill loop the user
