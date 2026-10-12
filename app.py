@@ -701,7 +701,8 @@ from routes.memory.memory_routes import setup_memory_routes
 memory_router = setup_memory_routes(memory_manager, session_manager, memory_vector=memory_vector)
 app.include_router(memory_router)
 from routes.skills_routes import setup_skills_routes
-app.include_router(setup_skills_routes(skills_manager))
+skills_router = setup_skills_routes(skills_manager)
+app.include_router(skills_router)
 
 # Chat
 from routes.chat_routes import setup_chat_routes
@@ -779,7 +780,8 @@ app.include_router(setup_signature_routes())
 
 # Gallery (image library)
 from routes.gallery.gallery_routes import setup_gallery_routes
-app.include_router(setup_gallery_routes())
+gallery_router = setup_gallery_routes()
+app.include_router(gallery_router)
 
 # Persisted image-editor drafts (server-backed projects)
 from routes.editor_draft_routes import setup_editor_draft_routes
@@ -791,7 +793,8 @@ task_scheduler = TaskScheduler(session_manager)
 from src.event_bus import set_task_scheduler
 set_task_scheduler(task_scheduler)
 from routes.task.task_routes import setup_task_routes
-app.include_router(setup_task_routes(task_scheduler))
+task_router = setup_task_routes(task_scheduler)
+app.include_router(task_router)
 
 from routes.assistant_routes import setup_assistant_routes
 app.include_router(setup_assistant_routes(task_scheduler))
@@ -879,6 +882,9 @@ app.include_router(setup_codex_routes(
     memory_router=memory_router,
     calendar_router=calendar_router,
     document_router=document_router,
+    gallery_router=gallery_router,
+    task_router=task_router,
+    skills_router=skills_router,
 ))
 app.include_router(setup_claude_routes())
 
