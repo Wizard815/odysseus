@@ -106,6 +106,32 @@ def _format_mcp_params(input_schema: Any) -> str:
     return hint
 
 
+def _resolve_input_schema(tool: Any, server_label: str = "") -> Dict:
+    """Get a tool's input schema, warning (not silently swallowing) when empty.
+
+    mcp>=2.0 renamed Tool.inputSchema -> Tool.input_schema; the old
+    hasattr(tool, "inputSchema") check silently returned False for every tool
+    on every server after that upgrade, so every schema fell back to {} and a
+    model asked to call a tool with a required param it could not see just
+    guessed blind. An empty schema is a strong signal something is wrong, so
+    log it instead of failing quietly the same way again.
+    """
+    schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
+    # Only warn when the schema is missing entirely (both attr names absent) —
+    # a real zero-arg tool legitimately returns {"type": "object",
+    # "properties": {}}, which must NOT trigger this on every such tool.
+    if not schema:
+        logger.warning(
+            "MCP tool '%s'%s resolved to an empty input schema — the model "
+            "will not see any parameter names for it. If this tool actually "
+            "takes parameters, the mcp package's Tool schema field may have "
+            "been renamed again.",
+            getattr(tool, "name", "?"),
+            f" (server: {server_label})" if server_label else "",
+        )
+    return schema
+
+
 # Tool-name prefixes that denote a read-only/inspection operation. Used to
 # classify MCP tools for plan mode when the server provides no readOnlyHint.
 # These are PREFIXES, not whole words (matched via str.startswith below), so a
@@ -133,8 +159,15 @@ def mcp_tool_is_readonly(tool: Dict) -> bool:
             read_hint = ann.get("readOnlyHint")
             destructive = ann.get("destructiveHint")
         else:
-            read_hint = getattr(ann, "readOnlyHint", None)
-            destructive = getattr(ann, "destructiveHint", None)
+            # Same rename risk as Tool.inputSchema -> input_schema (the dict
+            # branch above is unaffected — that is deserialized JSON, which
+            # stays camelCase per the MCP wire spec regardless of attr naming).
+            read_hint = getattr(ann, "read_only_hint", None)
+            if read_hint is None:
+                read_hint = getattr(ann, "readOnlyHint", None)
+            destructive = getattr(ann, "destructive_hint", None)
+            if destructive is None:
+                destructive = getattr(ann, "destructiveHint", None)
     if read_hint is True:
         return True
     if read_hint is False or destructive is True:
@@ -164,10 +197,37 @@ class McpManager:
         self._owner_tasks: Dict[str, asyncio.Task] = {}
         # Tracking updates to tools/connections for RAG indexing / prompt cache
         self._generation = 0
+
         # Identity of the actual connection, not a PID or lifecycle contract.
         self._resource_connections = {}
         self._resource_endpoints = {}
         self._resource_owners = {}
+
+    def _warn_tool_name_collisions(self, server_id: str, new_name: str, tools: List[Dict]) -> None:
+        """Log when a newly-connected server's bare tool names collide with an
+        already-connected server's.
+
+        A third-party server's tool names cannot be controlled, so this cannot
+        be prevented — but it is exactly the failure mode that caused a real
+        incident: an agent silently called one server's generic `search` tool
+        when it meant another's, because both expose verb-shaped names and
+        nothing surfaced the overlap at connect time.
+        """
+        new_bare_names = {t.get("name") for t in tools if t.get("name")}
+        for other_id, other_tools in self._tools.items():
+            if other_id == server_id:
+                continue
+            other_name = (self._connections.get(other_id, {}) or {}).get("name", other_id)
+            other_bare_names = {t.get("name") for t in other_tools if t.get("name")}
+            collisions = sorted(new_bare_names & other_bare_names)
+            if collisions:
+                logger.warning(
+                    "MCP tool name collision: server '%s' and server '%s' both "
+                    "expose tool name(s) %s. A model choosing by tool name alone "
+                    "(rather than the full mcp__<server_id>__<tool_name>) can call "
+                    "the wrong server's tool.",
+                    new_name, other_name, collisions,
+                )
 
     async def connect_server(
         self,
@@ -202,7 +262,7 @@ class McpManager:
                 self._generation += 1
             return res
         except Exception as e:
-            logger.error(f"Failed to connect MCP server {name} ({server_id}): {e}")
+            logger.error(f"Failed to connect MCP server {name} ({server_id}): {e}", exc_info=True)
             error_message = _format_mcp_connection_error(name, command or "", args or [], e)
             self._connections[server_id] = {"status": "error", "error": error_message, "name": name}
             self._generation += 1
@@ -247,7 +307,7 @@ class McpManager:
                         # no way to know it needed e.g. search_term. Check both
                         # names defensively given how many mcp>=2 renames
                         # we've already hit.
-                        "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                        "input_schema": _resolve_input_schema(tool, name),
                         # MCP tool annotations (readOnlyHint / destructiveHint) drive
                         # plan-mode read-only gating. Absent on many servers, so we
                         # fall back to a name heuristic in mcp_tool_is_readonly().
@@ -268,6 +328,7 @@ class McpManager:
                 self._register_resource_connection(server_id, session)
                 self._stacks[server_id] = stack
                 self._tools[server_id] = tools
+                self._warn_tool_name_collisions(server_id, name, tools)
                 self._connections[server_id] = {
                     "status": "connected",
                     "name": name,
@@ -318,7 +379,7 @@ class McpManager:
                         "name": tool.name,
                         "description": tool.description or "",
                         # See stdio connect above — mcp>=2.0 renamed this field.
-                        "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                        "input_schema": _resolve_input_schema(tool, name),
                         # MCP tool annotations (readOnlyHint / destructiveHint) drive
                         # plan-mode read-only gating. Absent on many servers, so we
                         # fall back to a name heuristic in mcp_tool_is_readonly().
@@ -329,6 +390,7 @@ class McpManager:
                 self._register_resource_connection(server_id, session)
                 self._stacks[server_id] = stack
                 self._tools[server_id] = tools
+                self._warn_tool_name_collisions(server_id, name, tools)
                 self._connections[server_id] = {
                     "status": "connected",
                     "name": name,
@@ -429,13 +491,14 @@ class McpManager:
                     "name": tool.name,
                     "description": tool.description or "",
                     # See stdio connect above — mcp>=2.0 renamed this field.
-                    "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                    "input_schema": _resolve_input_schema(tool, name),
                 })
 
             self._sessions[server_id] = session
             self._register_resource_connection(server_id, session)
             self._stacks[server_id] = stack
             self._tools[server_id] = tools
+            self._warn_tool_name_collisions(server_id, name, tools)
             self._connections[server_id] = {
                 "status": "connected", "name": name, "transport": "http",
                 "tool_count": len(tools),
