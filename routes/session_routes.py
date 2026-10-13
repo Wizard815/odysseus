@@ -527,6 +527,7 @@ def setup_session_routes(
         api_key: str = Form(""),
         endpoint_id: str = Form(""),
         cwd: str = Form(None),
+        mcp_disabled_server_ids: str = Form(None),
     ):
         skip_val = str(skip_validation).lower() == "true"
         user = effective_user(request)
@@ -641,6 +642,19 @@ def setup_session_routes(
             from src.endpoint_resolver import build_headers
             session.headers = build_headers(resolved_key, resolved_base)
             _persist_session_headers(sid, session.headers)
+        # Per-chat Connectors toggle chosen BEFORE the first message: the
+        # composer's picker works against the pending client-side chat, and
+        # the choice arrives here on the create call that materializes it.
+        # Same validation and behaviour as the PATCH /session/{sid} path.
+        if mcp_disabled_server_ids is not None:
+            try:
+                ids = json.loads(mcp_disabled_server_ids)
+                if not isinstance(ids, list):
+                    raise ValueError("mcp_disabled_server_ids must be a JSON array")
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(400, f"Invalid mcp_disabled_server_ids: {e}")
+            from core.database import set_session_mcp_disabled_servers
+            set_session_mcp_disabled_servers(sid, ids)
         # Fire webhook (sync-safe)
         if webhook_manager:
             webhook_manager.fire_and_forget("session.created", {
@@ -657,6 +671,23 @@ def setup_session_routes(
             archived=False,
             cwd=session.cwd,
         )    
+    @router.get("/session/{sid}/mcp-toggle")
+    def get_session_mcp_toggle(request: Request, sid: str):
+        """Current per-chat Connectors state: which McpServer.ids are hidden
+        for THIS chat only. A small dedicated read, so the composer's picker
+        does not have to fetch and filter the whole session list just to know
+        the current state."""
+        _verify_session_owner(request, sid)
+        db = SessionLocal()
+        try:
+            db_session = db.query(DbSession).filter(DbSession.id == sid).first()
+            if not db_session:
+                raise HTTPException(404, f"Session {sid} not found")
+            ids = json.loads(db_session.mcp_disabled_server_ids) if db_session.mcp_disabled_server_ids else []
+            return {"id": sid, "mcp_disabled_server_ids": ids}
+        finally:
+            db.close()
+
     @router.patch("/session/{sid}")
     def rename_session(
         request: Request, sid: str,

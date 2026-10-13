@@ -276,6 +276,10 @@ class Session(TimestampMixin, Base):
             'total_output_tokens': self.total_output_tokens or 0,
             'total_cost_usd': self.total_cost_usd or 0.0,
             'crew_member_id': self.crew_member_id,
+            'mcp_disabled_server_ids': (
+                json.loads(self.mcp_disabled_server_ids)
+                if self.mcp_disabled_server_ids else []
+            ),
         }
 
 class ChatMessage(Base):
