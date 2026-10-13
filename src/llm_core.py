@@ -3248,7 +3248,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         except httpx.NetworkError:
             yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502, "fallback_eligible": False})}\n\n'
         except Exception as e:
-            logger.error(f"Ollama stream error: {e}")
+            logger.error(f"Ollama stream error: {e}", exc_info=True)
             yield f'event: error\ndata: {json.dumps({"error": _stream_failure_message(e), "status": 502, "fallback_eligible": False})}\n\n'
         return
 
@@ -3401,7 +3401,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         except httpx.NetworkError:
             yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502, "fallback_eligible": False})}\n\n'
         except Exception as e:
-            logger.error(f"Anthropic stream error: {e}")
+            logger.error(f"Anthropic stream error: {e}", exc_info=True)
             yield f'event: error\ndata: {json.dumps({"error": _stream_failure_message(e), "status": 502, "fallback_eligible": False})}\n\n'
         return
 
@@ -3871,7 +3871,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
     except httpx.NetworkError:
         yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502, "fallback_eligible": False})}\n\n'
     except Exception as e:
-        logger.error(f"Stream error: {e}")
+        logger.error(f"Stream error: {e}", exc_info=True)
         yield f'event: error\ndata: {json.dumps({"error": _stream_failure_message(e), "status": 502, "fallback_eligible": False})}\n\n'
 
 
