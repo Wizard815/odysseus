@@ -25135,6 +25135,32 @@ async def stream_agent_loop(
     def _tool_schemas_for_route(route_state):
         route_mcp_schemas = route_state["mcp_schemas"]
         route_relevant_tools = route_state["relevant_tools"]
+        # mcp_schemas is a point-in-time snapshot taken when the route state was
+        # built. If an MCP server disconnects and reconnects mid-turn, or had
+        # not finished registering its tools when the snapshot was taken, it
+        # stays missing from every remaining round even though tool-rag keeps
+        # selecting its tools into route_relevant_tools. A real incident had
+        # retrieval log a tool as selected while the request never carried it,
+        # and the model flailed calling unrelated tools in a loop. Re-pull live
+        # so a mid-turn reconnect shows up on the very next round instead of
+        # never.
+        if mcp_mgr:
+            _live_mcp_schemas = mcp_mgr.get_all_openai_schemas(_mcp_disabled_map or {})
+            if _live_mcp_schemas is not None:
+                route_mcp_schemas = _live_mcp_schemas
+                _mcp_schema_names = {
+                    sch.get("function", {}).get("name") for sch in route_mcp_schemas
+                }
+                _missing_mcp = {
+                    t for t in (route_relevant_tools or ())
+                    if str(t).startswith("mcp__")
+                } - _mcp_schema_names
+                if _missing_mcp:
+                    logger.warning(
+                        "[tool-rag] retrieval selected MCP tools absent from the live "
+                        "schema list (server disconnected/reconnecting?): %s",
+                        sorted(_missing_mcp),
+                    )
         qwen38_router = bool(route_state.get("qwen38_tool_router"))
         tool_surface = _normalize_model_tool_surface(route_state.get("tool_surface"))
         tui_local_turn = _tui_local_workspace_turn(

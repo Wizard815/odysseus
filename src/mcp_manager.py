@@ -178,6 +178,12 @@ def mcp_tool_is_readonly(tool: Dict) -> bool:
 
 
 class McpManager:
+
+    # No prior bound existed on an individual tools/call round trip -- a hung or
+    # slow-to-respond server stalled the whole agent turn indefinitely.
+    # Generous on purpose (some tools legitimately do slow work server-side,
+    # e.g. Cookbook SSH probes), it just needs to be finite.
+    CALL_TOOL_TIMEOUT_S = 120
     """Manages MCP server connections and tool routing."""
 
     def __init__(self):
@@ -736,7 +742,15 @@ class McpManager:
                         ),
                         "exit_code": 1,
                     }
-            result = await self._do_call(session, tool_name, arguments)
+            result = await asyncio.wait_for(
+                self._do_call(session, tool_name, arguments), timeout=self.CALL_TOOL_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"MCP tool call timed out after {self.CALL_TOOL_TIMEOUT_S}s: {qualified_name}")
+            return {
+                "error": f"MCP tool '{qualified_name}' timed out after {self.CALL_TOOL_TIMEOUT_S}s",
+                "exit_code": 1,
+            }
         except BaseExceptionGroup as e:
             # Same anyio TaskGroup/GeneratorExit gap as the HTTP connect path
             # (see _connect_http) — a live call can hit it too if the
@@ -774,7 +788,18 @@ class McpManager:
                     session = self._sessions.get(server_id)
                     if session:
                         try:
-                            result = await self._do_call(session, tool_name, arguments)
+                            result = await asyncio.wait_for(
+                                self._do_call(session, tool_name, arguments), timeout=self.CALL_TOOL_TIMEOUT_S
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                f"MCP tool call timed out after reconnect "
+                                f"({self.CALL_TOOL_TIMEOUT_S}s): {qualified_name}"
+                            )
+                            return {
+                                "error": f"MCP tool '{qualified_name}' timed out after {self.CALL_TOOL_TIMEOUT_S}s",
+                                "exit_code": 1,
+                            }
                         except Exception as e2:
                             logger.error(f"MCP tool call failed after reconnect: {qualified_name}: {e2}", exc_info=True)
                             return {"error": str(e2), "exit_code": 1}
