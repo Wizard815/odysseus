@@ -4299,35 +4299,101 @@ def _workspace_agents_context_message(workspace: Optional[str]) -> Optional[Dict
     return untrusted_context_message("AGENTS.md", "\n".join(blocks))
 
 
-def _expand_browser_mcp_tools(
+# Cap on how many MCP tool schemas whole-server expansion may add. Whole
+# servers are admitted most-relevant-first until the next one would not fit,
+# so the all-or-nothing invariant below is never broken to squeeze under it.
+_MCP_EXPANSION_TOOL_CAP = 90
+
+
+def _expand_mcp_server_tools(
     tool_names: Set[str],
     mcp_mgr,
     disabled_tools: Optional[Set[str]] = None,
+    disabled_map=None,
 ) -> Set[str]:
-    """Expand browser intent to every connected Playwright MCP tool.
+    """Expand every MCP server that retrieval touched to its FULL toolset.
 
-    Playwright MCP tool names can change between releases (for example
-    browser_click vs browser_mouse_down). Route-level intent only needs to say
-    "browser"; the final prompt/schema set should use the names the connected
-    MCP server actually exposed.
+    Semantic top-k retrieval ranks individual tools, which for an MCP server
+    means the model can be handed one arbitrary slice of a coherent API -- e.g.
+    one server's `get_archives` (list soft-deleted entities) without
+    `find_entities`/`get_entities`. That is worse than offering the server not
+    at all: a real incident had a model burn 8 rounds calling the one tool it
+    had, narrating "wrong tool, retrying with the correct ones" and then
+    calling it again, because the tools it actually needed were never sent.
+
+    AnythingLLM (attach a server to an agent -> all its non-suppressed tools
+    become callable) and Open-WebUI (select a server for a chat -> all its
+    specs are sent) both treat an MCP server as all-or-nothing for a turn, and
+    neither runs per-query retrieval over individual MCP tools. Match that: a
+    server is either fully present or fully absent, never a partial slice.
+
+    Servers are admitted whole, most-hits-first, until the cap would be
+    exceeded -- a server that does not fit is left out entirely rather than
+    truncated. Honors the per-server disabled map so tools the user turned off
+    in Settings stay off, and keeps the private-browser preference above it.
     """
     names = set(tool_names or set())
     if _should_hide_raw_browser_mcp(disabled_tools):
+        # Filter rather than return: the private-browser preference is about
+        # the browser server only, and returning here would also skip the
+        # expansion of every other MCP server. Dropping the browser sentinel
+        # and its qualified names is enough, since the expansion below only
+        # touches servers still named in `names`.
         names.discard("builtin_browser")
         names = {name for name in names if not str(name).startswith(_BROWSER_MCP_PREFIX)}
-        return names
     if not mcp_mgr:
         return names
-    if not any(name == "builtin_browser" or name.startswith(_BROWSER_MCP_PREFIX) for name in names):
+
+    hit_servers: dict[str, int] = {}
+    for name in names:
+        if not str(name).startswith("mcp__"):
+            continue
+        parts = str(name).split("__", 2)
+        if len(parts) == 3:
+            hit_servers[parts[1]] = hit_servers.get(parts[1], 0) + 1
+    # Browser intent is expressed as the bare sentinel "builtin_browser" rather
+    # than a qualified mcp__ name, so it needs its own trigger.
+    if "builtin_browser" in names:
+        hit_servers.setdefault("builtin_browser", 1)
+    if not hit_servers:
         return names
+
     try:
-        for tool in mcp_mgr.get_all_tools():
-            if tool.get("server_id") == "builtin_browser" and not tool.get("is_disabled"):
-                qualified = tool.get("qualified_name")
-                if qualified:
-                    names.add(qualified)
+        all_tools = mcp_mgr.get_all_tools(disabled_map or {})
     except Exception as exc:
-        logger.warning("Failed to expand browser MCP tools: %s", exc)
+        logger.warning("Failed to expand MCP server tools: %s", exc)
+        return names
+
+    by_server: dict[str, list] = {}
+    for tool in all_tools:
+        if tool.get("is_disabled"):
+            continue
+        sid = tool.get("server_id")
+        qualified = tool.get("qualified_name")
+        if sid in hit_servers and qualified:
+            by_server.setdefault(sid, []).append(qualified)
+
+    budget = _MCP_EXPANSION_TOOL_CAP
+    for sid, _hits in sorted(hit_servers.items(), key=lambda kv: -kv[1]):
+        server_tools = by_server.get(sid) or []
+        if not server_tools:
+            continue
+        if len(server_tools) > budget:
+            logger.info(
+                "[tool-rag] MCP server %s (%d tools) skipped: would exceed the %d-tool "
+                "expansion cap; leaving it out entirely rather than sending a partial toolset",
+                sid, len(server_tools), _MCP_EXPANSION_TOOL_CAP,
+            )
+            continue
+        added = set(server_tools) - names
+        names.update(server_tools)
+        budget -= len(server_tools)
+        if added:
+            logger.info(
+                "[tool-rag] Expanded MCP server %s to its full toolset (+%d tools); "
+                "retrieval had matched only %d",
+                sid, len(added), _hits,
+            )
     return names
 
 
@@ -22692,7 +22758,7 @@ async def stream_agent_loop(
                     "[agent-intent] preferred private_browser over raw browser tools=%s",
                     sorted(_browser_tools),
                 )
-        _relevant_tools = _expand_browser_mcp_tools(_relevant_tools, mcp_mgr, disabled_tools)
+        _relevant_tools = _expand_mcp_server_tools(_relevant_tools, mcp_mgr, disabled_tools, _mcp_disabled_map)
 
     # The skill index injected by _build_system_prompt tells the model to
     # call `manage_skills action=view`, and Jaccard-matched skills are pasted
