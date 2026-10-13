@@ -2995,11 +2995,11 @@ export function _renderRunningTab() {
         const port = _taskPort(task);
         if (port) {
           try {
-            await fetch('/api/shell/exec', {
+            await _fetchWithTimeout('/api/shell/exec', {
               method: 'POST', credentials: 'same-origin',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ command: _portForceKill(task, port) }),
-            });
+            }, 15000);
           } catch {}
         }
       }
@@ -3062,11 +3062,11 @@ export function _renderRunningTab() {
         const port = _taskPort(task);
         if (port) {
           try {
-            await fetch('/api/shell/exec', {
+            await _fetchWithTimeout('/api/shell/exec', {
               method: 'POST', credentials: 'same-origin',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ command: _portForceKill(task, port) }),
-            });
+            }, 15000);
           } catch {}
         }
       }

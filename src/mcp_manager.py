@@ -106,6 +106,32 @@ def _format_mcp_params(input_schema: Any) -> str:
     return hint
 
 
+def _resolve_input_schema(tool: Any, server_label: str = "") -> Dict:
+    """Get a tool's input schema, warning (not silently swallowing) when empty.
+
+    mcp>=2.0 renamed Tool.inputSchema -> Tool.input_schema; the old
+    hasattr(tool, "inputSchema") check silently returned False for every tool
+    on every server after that upgrade, so every schema fell back to {} and a
+    model asked to call a tool with a required param it could not see just
+    guessed blind. An empty schema is a strong signal something is wrong, so
+    log it instead of failing quietly the same way again.
+    """
+    schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
+    # Only warn when the schema is missing entirely (both attr names absent) —
+    # a real zero-arg tool legitimately returns {"type": "object",
+    # "properties": {}}, which must NOT trigger this on every such tool.
+    if not schema:
+        logger.warning(
+            "MCP tool '%s'%s resolved to an empty input schema — the model "
+            "will not see any parameter names for it. If this tool actually "
+            "takes parameters, the mcp package's Tool schema field may have "
+            "been renamed again.",
+            getattr(tool, "name", "?"),
+            f" (server: {server_label})" if server_label else "",
+        )
+    return schema
+
+
 # Tool-name prefixes that denote a read-only/inspection operation. Used to
 # classify MCP tools for plan mode when the server provides no readOnlyHint.
 # These are PREFIXES, not whole words (matched via str.startswith below), so a
@@ -133,8 +159,15 @@ def mcp_tool_is_readonly(tool: Dict) -> bool:
             read_hint = ann.get("readOnlyHint")
             destructive = ann.get("destructiveHint")
         else:
-            read_hint = getattr(ann, "readOnlyHint", None)
-            destructive = getattr(ann, "destructiveHint", None)
+            # Same rename risk as Tool.inputSchema -> input_schema (the dict
+            # branch above is unaffected — that is deserialized JSON, which
+            # stays camelCase per the MCP wire spec regardless of attr naming).
+            read_hint = getattr(ann, "read_only_hint", None)
+            if read_hint is None:
+                read_hint = getattr(ann, "readOnlyHint", None)
+            destructive = getattr(ann, "destructive_hint", None)
+            if destructive is None:
+                destructive = getattr(ann, "destructiveHint", None)
     if read_hint is True:
         return True
     if read_hint is False or destructive is True:
@@ -164,10 +197,37 @@ class McpManager:
         self._owner_tasks: Dict[str, asyncio.Task] = {}
         # Tracking updates to tools/connections for RAG indexing / prompt cache
         self._generation = 0
+
         # Identity of the actual connection, not a PID or lifecycle contract.
         self._resource_connections = {}
         self._resource_endpoints = {}
         self._resource_owners = {}
+
+    def _warn_tool_name_collisions(self, server_id: str, new_name: str, tools: List[Dict]) -> None:
+        """Log when a newly-connected server's bare tool names collide with an
+        already-connected server's.
+
+        A third-party server's tool names cannot be controlled, so this cannot
+        be prevented — but it is exactly the failure mode that caused a real
+        incident: an agent silently called one server's generic `search` tool
+        when it meant another's, because both expose verb-shaped names and
+        nothing surfaced the overlap at connect time.
+        """
+        new_bare_names = {t.get("name") for t in tools if t.get("name")}
+        for other_id, other_tools in self._tools.items():
+            if other_id == server_id:
+                continue
+            other_name = (self._connections.get(other_id, {}) or {}).get("name", other_id)
+            other_bare_names = {t.get("name") for t in other_tools if t.get("name")}
+            collisions = sorted(new_bare_names & other_bare_names)
+            if collisions:
+                logger.warning(
+                    "MCP tool name collision: server '%s' and server '%s' both "
+                    "expose tool name(s) %s. A model choosing by tool name alone "
+                    "(rather than the full mcp__<server_id>__<tool_name>) can call "
+                    "the wrong server's tool.",
+                    new_name, other_name, collisions,
+                )
 
     async def connect_server(
         self,
@@ -178,6 +238,7 @@ class McpManager:
         args: Optional[List[str]] = None,
         env: Optional[Dict[str, str]] = None,
         url: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> bool:
         """Connect to an MCP server via stdio, SSE, or Streamable HTTP transport."""
         try:
@@ -191,9 +252,9 @@ class McpManager:
             if transport == "stdio":
                 res = await self._connect_stdio(server_id, name, command, args or [], env or {})
             elif transport == "sse":
-                res = await self._connect_sse(server_id, name, url)
+                res = await self._connect_sse(server_id, name, url, headers=headers)
             elif transport == "http":
-                res = await self._start_http_connect(server_id, name, url)
+                res = await self._start_http_connect(server_id, name, url, headers=headers)
             else:
                 logger.error(f"Unknown MCP transport: {transport}")
                 res = False
@@ -201,7 +262,7 @@ class McpManager:
                 self._generation += 1
             return res
         except Exception as e:
-            logger.error(f"Failed to connect MCP server {name} ({server_id}): {e}")
+            logger.error(f"Failed to connect MCP server {name} ({server_id}): {e}", exc_info=True)
             error_message = _format_mcp_connection_error(name, command or "", args or [], e)
             self._connections[server_id] = {"status": "error", "error": error_message, "name": name}
             self._generation += 1
@@ -246,7 +307,7 @@ class McpManager:
                         # no way to know it needed e.g. search_term. Check both
                         # names defensively given how many mcp>=2 renames
                         # we've already hit.
-                        "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                        "input_schema": _resolve_input_schema(tool, name),
                         # MCP tool annotations (readOnlyHint / destructiveHint) drive
                         # plan-mode read-only gating. Absent on many servers, so we
                         # fall back to a name heuristic in mcp_tool_is_readonly().
@@ -267,6 +328,7 @@ class McpManager:
                 self._register_resource_connection(server_id, session)
                 self._stacks[server_id] = stack
                 self._tools[server_id] = tools
+                self._warn_tool_name_collisions(server_id, name, tools)
                 self._connections[server_id] = {
                     "status": "connected",
                     "name": name,
@@ -293,7 +355,7 @@ class McpManager:
             }
             return False
 
-    async def _connect_sse(self, server_id: str, name: str, url: str) -> bool:
+    async def _connect_sse(self, server_id: str, name: str, url: str, headers: Optional[Dict[str, str]] = None) -> bool:
         """Connect to an MCP server via SSE transport."""
         try:
             from mcp import ClientSession
@@ -304,7 +366,7 @@ class McpManager:
             registered = False
 
             try:
-                transport = await stack.enter_async_context(sse_client(url))
+                transport = await stack.enter_async_context(sse_client(url, headers=headers or {}))
                 read_stream, write_stream = transport
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
 
@@ -317,7 +379,7 @@ class McpManager:
                         "name": tool.name,
                         "description": tool.description or "",
                         # See stdio connect above — mcp>=2.0 renamed this field.
-                        "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                        "input_schema": _resolve_input_schema(tool, name),
                         # MCP tool annotations (readOnlyHint / destructiveHint) drive
                         # plan-mode read-only gating. Absent on many servers, so we
                         # fall back to a name heuristic in mcp_tool_is_readonly().
@@ -328,6 +390,7 @@ class McpManager:
                 self._register_resource_connection(server_id, session)
                 self._stacks[server_id] = stack
                 self._tools[server_id] = tools
+                self._warn_tool_name_collisions(server_id, name, tools)
                 self._connections[server_id] = {
                     "status": "connected",
                     "name": name,
@@ -349,13 +412,13 @@ class McpManager:
             self._connections[server_id] = {"status": "error", "error": "mcp package not installed", "name": name}
             return False
 
-    async def _start_http_connect(self, server_id: str, name: str, url: str, wait: float = 8.0) -> bool:
+    async def _start_http_connect(self, server_id: str, name: str, url: str, wait: float = 8.0, headers: Optional[Dict[str, str]] = None) -> bool:
         """Begin a Streamable HTTP connect in the background. Returns within
         `wait` seconds: True if it connected (cached-token path), otherwise the
         flow is awaiting browser authorization and status becomes 'needs_auth'."""
         import asyncio
         self._connections[server_id] = {"status": "connecting", "name": name, "transport": "http"}
-        task = asyncio.create_task(self._connect_http(server_id, name, url))
+        task = asyncio.create_task(self._connect_http(server_id, name, url, headers=headers))
         self._connect_tasks[server_id] = task
         done, _ = await asyncio.wait({task}, timeout=wait)
         if task in done:
@@ -382,11 +445,19 @@ class McpManager:
             }
         return False
 
-    async def _connect_http(self, server_id: str, name: str, url: str) -> bool:
-        """Connect to a Streamable HTTP MCP server (with automatic OAuth)."""
+    async def _connect_http(self, server_id: str, name: str, url: str, headers: Optional[Dict[str, str]] = None) -> bool:
+        """Connect to a Streamable HTTP MCP server (with automatic OAuth).
+
+        When headers are given (e.g. a Bearer token) they are forwarded on the
+        HTTP client and OAuth is skipped.
+        """
         try:
             from mcp import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
+            # mcp>=2.0 renamed this export from streamablehttp_client to
+            # streamable_http_client, and dropped its headers=/auth= kwargs —
+            # they now go on a pre-configured httpx2.AsyncClient.
+            from mcp.client.streamable_http import streamable_http_client
+            import httpx2
             from contextlib import AsyncExitStack
             from src.mcp_oauth import build_provider, clear_auth_url
 
@@ -398,10 +469,18 @@ class McpManager:
                     "auth_url": auth_url,
                 }
 
-            provider = build_provider(server_id, url, on_redirect=_on_redirect)
             stack = AsyncExitStack()
-            transport = await stack.enter_async_context(streamablehttp_client(url, auth=provider))
-            read_stream, write_stream, _get_session_id = transport
+            if headers:
+                _http_client = httpx2.AsyncClient(headers=headers)
+            else:
+                provider = build_provider(server_id, url, on_redirect=_on_redirect)
+                _http_client = httpx2.AsyncClient(auth=provider)
+            transport = await stack.enter_async_context(
+                streamable_http_client(url, http_client=_http_client)
+            )
+            # mcp>=2.0 yields (read_stream, write_stream) only; the session-id
+            # getter that used to be a third element is gone.
+            read_stream, write_stream = transport
             session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
             await session.initialize()
 
@@ -412,13 +491,14 @@ class McpManager:
                     "name": tool.name,
                     "description": tool.description or "",
                     # See stdio connect above — mcp>=2.0 renamed this field.
-                    "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {},
+                    "input_schema": _resolve_input_schema(tool, name),
                 })
 
             self._sessions[server_id] = session
             self._register_resource_connection(server_id, session)
             self._stacks[server_id] = stack
             self._tools[server_id] = tools
+            self._warn_tool_name_collisions(server_id, name, tools)
             self._connections[server_id] = {
                 "status": "connected", "name": name, "transport": "http",
                 "tool_count": len(tools),
@@ -539,6 +619,8 @@ class McpManager:
     async def _connect_with_timeout(self, srv):
         args = json.loads(srv.args) if srv.args else []
         env = json.loads(srv.env) if srv.env else {}
+        _raw_headers = getattr(srv, "headers", None)
+        headers = _raw_headers if isinstance(_raw_headers, dict) else (json.loads(_raw_headers) if _raw_headers else None)
 
         try:
             await asyncio.wait_for(
@@ -550,6 +632,7 @@ class McpManager:
                     args=args,
                     env=env,
                     url=srv.url,
+                    headers=headers,
                 ),
                 timeout=20,
             )
