@@ -21057,6 +21057,7 @@ async def stream_agent_loop(
     _parent_run_id: Optional[str] = None,
     request_authority=MISSING_AUTHORITY,
     context_resolution=None,
+    session_mcp_disabled_server_ids: Optional[Set[str]] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -21994,6 +21995,19 @@ async def stream_agent_loop(
             _last_user[:80],
         )
     _mcp_disabled_map = _load_mcp_disabled_map() if mcp_mgr else {}
+    if mcp_mgr and session_mcp_disabled_server_ids:
+        # Per-chat Connectors toggle: fully hide a server's tools for THIS chat
+        # only, on top of (not instead of) the global per-server disabled_tools
+        # above. Same dual-enforcement shape as the plan_mode block below --
+        # schema/prompt-text hiding via _mcp_disabled_map (bare tool names)
+        # PLUS a flat qualified-name block via disabled_tools, so a tool can
+        # never be described in the prompt while also being absent from the
+        # schema list (that mismatch is what confuses a model into repeating
+        # failed tool calls).
+        for _t in mcp_mgr.get_all_tools():
+            if _t.get("server_id") in session_mcp_disabled_server_ids:
+                _mcp_disabled_map.setdefault(_t["server_id"], set()).add(_t["name"])
+                disabled_tools.add(_t["qualified_name"])
     if turn_contract is not None and turn_contract.selection_mode == "full_compact_experiment":
         _direct_low_signal = False
     if _direct_low_signal:

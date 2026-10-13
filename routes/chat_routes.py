@@ -4490,6 +4490,25 @@ def setup_chat_routes(
                         client_runtime_context,
                     )
 
+                    # Per-chat Connectors toggle: read the raw column rather
+                    # than the in-memory session wrapper, which is a curated
+                    # object that does not mirror every Session column. Read
+                    # the scalar, not the ORM row -- get_db_session() commits
+                    # on exit and expire_on_commit=True then detaches any
+                    # returned object, so attribute access after the block
+                    # raises DetachedInstanceError.
+                    _session_mcp_disabled_ids = None
+                    try:
+                        from core.database import get_db_session as _get_db_session, Session as _DbSession
+                        with _get_db_session() as _db:
+                            _raw = _db.query(_DbSession.mcp_disabled_server_ids).filter(
+                                _DbSession.id == session
+                            ).scalar()
+                        if _raw:
+                            _session_mcp_disabled_ids = set(json.loads(_raw))
+                    except Exception:
+                        logger.debug("Per-chat MCP toggle lookup failed for session %s", session, exc_info=True)
+
                     _forced_tools = None
                     if _search_enabled:
                         _forced_tools = set(WEB_TOOL_NAMES)
@@ -4566,6 +4585,7 @@ def setup_chat_routes(
                         turn_contract=_turn_contract,
                         request_authority=_request_authority,
                         uploaded_files=ctx.uploaded_files,
+                        session_mcp_disabled_server_ids=_session_mcp_disabled_ids,
                         defer_context_shaping=_foreground_policy.enabled,
                         external_untrusted_context_seen=external_untrusted_context_seen,
                         delegated_credential=_delegated_credential,

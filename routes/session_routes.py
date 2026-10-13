@@ -664,6 +664,7 @@ def setup_session_routes(
         model: str = Form(None), endpoint_url: str = Form(None),
         endpoint_id: str = Form(None),
         cwd: str = Form(None),
+        mcp_disabled_server_ids: str = Form(None),
     ):
         _verify_session_owner(request, sid)
         try:
@@ -699,6 +700,19 @@ def setup_session_routes(
                     result["cwd"] = clean_cwd
             finally:
                 db.close()
+        # Per-chat Connectors toggle: which MCP servers are hidden for THIS
+        # chat only. Body is a JSON array of McpServer.id strings; an empty
+        # array clears it (re-enables everything for this chat).
+        if mcp_disabled_server_ids is not None:
+            try:
+                ids = json.loads(mcp_disabled_server_ids)
+                if not isinstance(ids, list):
+                    raise ValueError("mcp_disabled_server_ids must be a JSON array")
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(400, f"Invalid mcp_disabled_server_ids: {e}")
+            from core.database import set_session_mcp_disabled_servers
+            set_session_mcp_disabled_servers(sid, ids)
+            result["mcp_disabled_server_ids"] = ids
         # Switch model/endpoint mid-session
         if model is not None and endpoint_url is not None:
             user = effective_user(request)
