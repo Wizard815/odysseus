@@ -370,6 +370,19 @@ def _pick_endpoint_for_sort(owner=None):
         return url, model, headers
     return None, None, None
 
+def _supplied(value):
+    """Return None when an optional string form parameter was never supplied.
+
+    The Python default for an optional form field is the `Form(...)` sentinel,
+    not None: FastAPI substitutes the parsed value on a real request, but a
+    direct call (the route tests, internal callers) keeps the sentinel. So the
+    test is "is this actually the declared type" rather than "is it not None" --
+    without it, a new optional field breaks every caller that predates it with
+    `json.loads(<FieldInfo>)` raising TypeError.
+    """
+    return value if isinstance(value, str) else None
+
+
 def setup_session_routes(
     session_manager: SessionManager,
     config: dict,
@@ -646,6 +659,7 @@ def setup_session_routes(
         # composer's picker works against the pending client-side chat, and
         # the choice arrives here on the create call that materializes it.
         # Same validation and behaviour as the PATCH /session/{sid} path.
+        mcp_disabled_server_ids = _supplied(mcp_disabled_server_ids)
         if mcp_disabled_server_ids is not None:
             try:
                 ids = json.loads(mcp_disabled_server_ids)
@@ -734,6 +748,7 @@ def setup_session_routes(
         # Per-chat Connectors toggle: which MCP servers are hidden for THIS
         # chat only. Body is a JSON array of McpServer.id strings; an empty
         # array clears it (re-enables everything for this chat).
+        mcp_disabled_server_ids = _supplied(mcp_disabled_server_ids)
         if mcp_disabled_server_ids is not None:
             try:
                 ids = json.loads(mcp_disabled_server_ids)
