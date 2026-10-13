@@ -763,8 +763,26 @@ class McpManager:
                     logger.error(f"MCP reconnect failed for {server_id}")
                     return {"error": f"MCP server crashed and reconnect failed: {server_id}", "exit_code": 1}
             else:
-                logger.error(f"MCP tool call failed: {qualified_name}: {e}")
-                return {"error": str(e), "exit_code": 1}
+                # Non-builtin (stdio/SSE/HTTP-configured) servers previously had
+                # no self-healing here: a dead transport ("Connection closed")
+                # failed every subsequent call for the rest of the conversation
+                # until someone manually clicked reconnect. Try once to bring
+                # the connection back up before giving up.
+                logger.warning(f"MCP call failed for {qualified_name}, attempting reconnect: {e}", exc_info=True)
+                reconnected = await self._reconnect_any(server_id)
+                if reconnected:
+                    session = self._sessions.get(server_id)
+                    if session:
+                        try:
+                            result = await self._do_call(session, tool_name, arguments)
+                        except Exception as e2:
+                            logger.error(f"MCP tool call failed after reconnect: {qualified_name}: {e2}", exc_info=True)
+                            return {"error": str(e2), "exit_code": 1}
+                    else:
+                        return {"error": f"Reconnected but no session for {server_id}", "exit_code": 1}
+                else:
+                    logger.error(f"MCP tool call failed and reconnect failed: {qualified_name}: {e}")
+                    return {"error": str(e), "exit_code": 1}
 
         return result
 
@@ -830,6 +848,56 @@ class McpManager:
             f"Invalid arguments for '{tool_name}' -- {'; '.join(problems)}. "
             f"This tool accepts: {', '.join(sorted(props))}."
         )
+
+    async def _reconnect_any(self, server_id: str) -> bool:
+        """Tear down and reconnect ANY configured MCP server (stdio/SSE/HTTP),
+        using its stored config from the database.
+
+        Mirrors the manual /servers/{id}/reconnect endpoint. call_tool's
+        auto-reconnect-on-failure only covered builtin (stdio, in-process)
+        servers via _reconnect_builtin -- a real incident showed a remote HTTP
+        server whose transport died mid-conversation ("Connection closed") and
+        then failed EVERY subsequent tool call for the rest of the session,
+        because nothing ever tried to bring it back. This is the non-builtin
+        counterpart, so any transport gets the same self-healing on a dead
+        connection instead of needing a manual reconnect click.
+        """
+        db = SessionLocal()
+        try:
+            srv = db.query(McpServer).filter(McpServer.id == server_id).first()
+            if not srv:
+                return False
+            args = json.loads(srv.args) if srv.args else []
+            env = json.loads(srv.env) if srv.env else {}
+            # The headers column is JSON, so it is usually already a dict; the
+            # string branch is for a row written before the column was typed.
+            _raw_headers = srv.headers
+            headers = (
+                _raw_headers if isinstance(_raw_headers, dict)
+                else (json.loads(_raw_headers) if _raw_headers else None)
+            )
+            name, transport, command, url = srv.name, srv.transport, srv.command, srv.url
+        finally:
+            db.close()
+
+        await self.disconnect_server(server_id)
+        try:
+            ok = await self.connect_server(
+                server_id=server_id,
+                name=name,
+                transport=transport,
+                command=command,
+                args=args,
+                env=env,
+                url=url,
+                headers=headers,
+            )
+            if ok:
+                logger.info(f"Reconnected MCP server after dead-connection failure: {name}")
+            return ok
+        except Exception as e:
+            logger.error(f"Failed to reconnect MCP server {name}: {e}", exc_info=True)
+            return False
 
     async def _do_call(self, session, tool_name: str, arguments: Dict) -> Dict:
         """Execute a single MCP tool call and return result dict."""
