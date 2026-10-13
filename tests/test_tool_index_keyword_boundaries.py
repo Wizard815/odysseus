@@ -16,7 +16,7 @@ from src.tool_index import ToolIndex
 
 def _index():
     ti = ToolIndex.__new__(ToolIndex)
-    ti.retrieve = lambda query, k=8: []  # no chroma; isolate the keyword loop
+    ti.retrieve = lambda query, k=8, exclude_servers=None: []  # no chroma; isolate the keyword loop
     return ti
 
 

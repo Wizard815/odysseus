@@ -22531,7 +22531,18 @@ async def stream_agent_loop(
                 if _retrieval_query:
                     try:
                         _relevant_tools = await asyncio.wait_for(
-                            asyncio.to_thread(tool_idx.get_tools_for_query, _retrieval_query, 8),
+                            asyncio.to_thread(
+                                tool_idx.get_tools_for_query,
+                                _retrieval_query,
+                                8,
+                                None,
+                                # Servers switched off in this chat's Connectors
+                                # panel must not consume the retrieval budget:
+                                # their tools get dropped from the schema list
+                                # downstream anyway, so every slot one occupies is
+                                # a slot the servers the user enabled do not get.
+                                set(session_mcp_disabled_server_ids or ()),
+                            ),
                             timeout=_TOOL_SELECTION_TIMEOUT_SECONDS,
                         )
                         logger.info(f"[tool-rag] Retrieved tools for query: {sorted(_relevant_tools - ALWAYS_AVAILABLE)}")
