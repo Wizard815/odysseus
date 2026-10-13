@@ -215,7 +215,27 @@ def _validate_mcp_command(command, args, env) -> Optional[str]:
     return None
 
 
-async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
+def _session_mcp_disabled_ids(session_id: Optional[str]) -> set:
+    """Which McpServer.ids are hidden for THIS chat only (per-chat Connectors
+    toggle). Returns an empty set on any error or missing value -- best-effort
+    and never raises, so a lookup failure falls back to "nothing disabled"
+    rather than breaking the tool call.
+    """
+    if not session_id:
+        return set()
+    try:
+        import json as _json
+        from core.database import get_db_session, Session as _DbSession
+        with get_db_session() as db:
+            raw = db.query(_DbSession.mcp_disabled_server_ids).filter(
+                _DbSession.id == session_id
+            ).scalar()
+        return set(_json.loads(raw)) if raw else set()
+    except Exception:
+        return set()
+
+
+async def do_manage_mcp(content: str, owner: Optional[str] = None, session_id: Optional[str] = None) -> Dict:
     """Manage MCP servers: list, add, delete, enable, disable, reconnect."""
     try:
         args = _parse_tool_args(content)
@@ -361,6 +381,45 @@ async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
         tools = mcp.get_all_tools()
         if sid:
             tools = [t for t in tools if t.get("server_id") == sid]
+        # Per-chat Connectors toggle: never claim a tool is "available" here if
+        # it is hidden for this session. get_all_openai_schemas() -- which
+        # actually builds what is callable -- already excludes it via
+        # _mcp_disabled_map, so reporting it as available would tell the model it
+        # can call something it structurally cannot, and the self-heal block
+        # that unions this response's names into _relevant_tools would try to
+        # "unlock" a tool that was never there.
+        _hidden = _session_mcp_disabled_ids(session_id)
+        if _hidden:
+            tools = [t for t in tools if t.get("server_id") not in _hidden]
+        # An unscoped listing across many connected servers can be large enough
+        # to hit format_tool_result's 8000-char truncation cap. The model then
+        # sees a generic "(truncated, N chars total)" marker with no way to
+        # recover and -- observed in practice -- just re-calls the identical
+        # unscoped list_tools, burning rounds until the loop-breaker kills it.
+        # Once a server_id already narrows things, return the real listing as
+        # before; otherwise, when there is enough to plausibly overflow, return
+        # a compact per-server summary with an explicit next step.
+        if not sid and len(tools) > 15:
+            by_server: dict[str, int] = {}
+            server_id_of: dict[str, str] = {}
+            for t in tools:
+                by_server[t["server_name"]] = by_server.get(t["server_name"], 0) + 1
+                server_id_of.setdefault(t["server_name"], t.get("server_id", ""))
+            servers = [
+                {"server": name, "server_id": server_id_of.get(name, ""), "tool_count": count}
+                for name, count in by_server.items()
+            ]
+            return {
+                "response": (
+                    f"{len(tools)} MCP tools across {len(servers)} server(s). "
+                    "Too many to list individually here -- call list_tools again "
+                    "with a `server_id` from the list below to see that server's "
+                    "actual tool names. Do not repeat the same unscoped call "
+                    "expecting different output."
+                ),
+                "servers": servers,
+                "exit_code": 0,
+            }
         items = [{"name": t["name"], "server": t["server_name"],
                   "description": t.get("description", "")} for t in tools]
         return {"response": f"{len(items)} MCP tools available", "tools": items, "exit_code": 0}
@@ -801,9 +860,19 @@ def _owner_adapter(fn):
     return _execute
 
 
+def _owner_session_adapter(fn):
+    """Like _owner_adapter, but also forwards session_id -- for handlers
+    (currently just manage_mcp) that need per-chat-scoped state, not just
+    per-owner state. _direct_fallback already puts session_id in ctx.
+    """
+    async def _execute(content: str, ctx: dict) -> dict:
+        return await fn(content, ctx.get("owner"), ctx.get("session_id"))
+    return _execute
+
+
 ADMIN_TOOL_HANDLERS = {
     "manage_endpoints": _owner_adapter(do_manage_endpoints),
-    "manage_mcp": _owner_adapter(do_manage_mcp),
+    "manage_mcp": _owner_session_adapter(do_manage_mcp),
     "manage_webhooks": _owner_adapter(do_manage_webhooks),
     "manage_tokens": _owner_adapter(do_manage_tokens),
     "manage_settings": _owner_adapter(do_manage_settings),

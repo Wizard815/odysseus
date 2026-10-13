@@ -280,7 +280,26 @@ class ToolIndex:
         logger.info(f"Indexed {len(docs)} built-in tools")
 
     def index_mcp_tools(self, mcp_mgr, disabled_map: Optional[Dict] = None):
-        """Index MCP tool descriptions. Call after MCP servers connect/disconnect."""
+        """Index MCP tool descriptions. Call after MCP servers connect/disconnect.
+
+        The index is deliberately built UNFILTERED -- `disabled_map` is accepted
+        for call-compatibility but no longer narrows what is indexed. ToolIndex
+        is a process-wide singleton shared by every chat and user, while a
+        disabled map is per-chat (the Connectors panel toggles a server off for
+        one conversation). Baking per-chat state into shared global state broke
+        both ways:
+
+          - The `_generation` short-circuit below only advances on server
+            connect/disconnect, so toggling a connector off never triggered a
+            reindex and the index kept serving that server's tools anyway.
+          - Had it reindexed, whichever chat triggered it would have imposed its
+            own toggles on every other chat's retrieval.
+
+        Filtering now happens per-query in retrieve()/get_tools_for_query(),
+        which is where per-chat context actually lives. That also makes the
+        `_generation` short-circuit correct, since the index then depends on
+        exactly what `_generation` tracks: which servers are connected.
+        """
         if not mcp_mgr:
             return
 
@@ -300,7 +319,8 @@ class ToolIndex:
 
         # Get current MCP tools
         try:
-            all_tools = mcp_mgr.get_tool_descriptions_for_prompt(disabled_map or {})
+            # Intentionally unfiltered -- see the docstring above.
+            all_tools = mcp_mgr.get_tool_descriptions_for_prompt({})
         except Exception:
             all_tools = ""
 
@@ -376,8 +396,31 @@ class ToolIndex:
         self._mcp_generation = gen
         logger.info(f"Indexed {len(docs)} MCP tools")
 
-    def retrieve(self, query: str, k: int = 8) -> List[str]:
-        """Retrieve the top-K most relevant tool names for a query."""
+    @staticmethod
+    def _server_of(tool_name: str) -> Optional[str]:
+        """server_id from a qualified `mcp__{server_id}__{tool}` name, else None."""
+        if not tool_name.startswith("mcp__"):
+            return None
+        parts = tool_name.split("__", 2)
+        return parts[1] if len(parts) == 3 else None
+
+    # Multiplier applied to n_results when servers are excluded, so the top-K
+    # budget is not silently spent on tools that are about to be filtered out.
+    _EXCLUDE_OVERFETCH = 4
+
+    def retrieve(
+        self, query: str, k: int = 8, exclude_servers: Optional[Set[str]] = None
+    ) -> List[str]:
+        """Retrieve the top-K most relevant tool names for a query.
+
+        `exclude_servers` drops tools belonging to MCP servers that are off for
+        this chat. They are removed BEFORE the top-K trim, with an over-fetch,
+        because filtering afterwards silently shrinks the result: a real
+        incident retrieved 7 tools of which 4 belonged to two servers the user
+        had toggled off, leaving a single tool from the one server they
+        actually wanted enabled.
+        """
+        fetch_k = k * self._EXCLUDE_OVERFETCH if exclude_servers else k
         rows = []
         lane_priority = {LANE_CUSTOM: 0, LANE_FASTEMBED: 1}
         for lane in self._lanes:
@@ -387,7 +430,7 @@ class ToolIndex:
                     continue
                 results = lane.collection.query(
                     query_embeddings=lane.encode([query]),
-                    n_results=min(k, count),
+                    n_results=min(fetch_k, count),
                     include=["metadatas", "distances"],
                 )
                 if not results or not results.get("metadatas"):
@@ -397,13 +440,16 @@ class ToolIndex:
                     distance_list = distances[list_idx] if list_idx < len(distances) else []
                     for idx, meta in enumerate(meta_list):
                         name = meta.get("tool_name", "")
-                        if name:
-                            distance = distance_list[idx] if idx < len(distance_list) else 1.0
-                            rows.append({
-                                "tool_name": name,
-                                "score": round(1.0 - distance, 4),
-                                "embedding_lane": lane.name,
-                            })
+                        if not name:
+                            continue
+                        if exclude_servers and self._server_of(name) in exclude_servers:
+                            continue
+                        distance = distance_list[idx] if idx < len(distance_list) else 1.0
+                        rows.append({
+                            "tool_name": name,
+                            "score": round(1.0 - distance, 4),
+                            "embedding_lane": lane.name,
+                        })
             except Exception as e:
                 logger.warning("Tool retrieval failed in %s lane: %s", lane.name, e)
         rows.sort(key=lambda row: (-row["score"], lane_priority.get(row["embedding_lane"], 99)))
@@ -620,11 +666,20 @@ class ToolIndex:
     }
 
     def get_tools_for_query(
-        self, query: str, k: int = 8, always_include: Optional[Set[str]] = None
+        self,
+        query: str,
+        k: int = 8,
+        always_include: Optional[Set[str]] = None,
+        exclude_servers: Optional[Set[str]] = None,
     ) -> Set[str]:
-        """Get the set of tool names to include for a given user query."""
+        """Get the set of tool names to include for a given user query.
+
+        `exclude_servers` is the set of MCP server ids switched off for this
+        chat in the Connectors panel; their tools are kept out of both the
+        retrieval results and any server-name force-include.
+        """
         base = set(always_include or ALWAYS_AVAILABLE)
-        retrieved = self.retrieve(query, k=k)
+        retrieved = self.retrieve(query, k=k, exclude_servers=exclude_servers)
         base.update(retrieved)
         # Keyword-based force-include for common intents. Match on word
         # boundaries, not raw substrings, so short hints like "fix", "line",

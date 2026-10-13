@@ -178,6 +178,12 @@ def mcp_tool_is_readonly(tool: Dict) -> bool:
 
 
 class McpManager:
+
+    # No prior bound existed on an individual tools/call round trip -- a hung or
+    # slow-to-respond server stalled the whole agent turn indefinitely.
+    # Generous on purpose (some tools legitimately do slow work server-side,
+    # e.g. Cookbook SSH probes), it just needs to be finite.
+    CALL_TOOL_TIMEOUT_S = 120
     """Manages MCP server connections and tool routing."""
 
     def __init__(self):
@@ -683,6 +689,15 @@ class McpManager:
         server_id = parts[1]
         tool_name = parts[2]
 
+        arg_error = self._validate_tool_args(server_id, tool_name, arguments)
+        if arg_error:
+            # Reject here rather than at the server: the round trip is wasted
+            # either way, but a schema-derived message names the exact argument
+            # and the valid alternatives, where a server-side error is usually
+            # a generic traceback the model cannot act on.
+            logger.warning(f"MCP tool call rejected before dispatch: {qualified_name}: {arg_error}")
+            return {"error": arg_error, "exit_code": 1}
+
         session = self._sessions.get(server_id)
         if not session:
             # Distinct from the "session died mid-conversation" path below --
@@ -727,7 +742,15 @@ class McpManager:
                         ),
                         "exit_code": 1,
                     }
-            result = await self._do_call(session, tool_name, arguments)
+            result = await asyncio.wait_for(
+                self._do_call(session, tool_name, arguments), timeout=self.CALL_TOOL_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"MCP tool call timed out after {self.CALL_TOOL_TIMEOUT_S}s: {qualified_name}")
+            return {
+                "error": f"MCP tool '{qualified_name}' timed out after {self.CALL_TOOL_TIMEOUT_S}s",
+                "exit_code": 1,
+            }
         except BaseExceptionGroup as e:
             # Same anyio TaskGroup/GeneratorExit gap as the HTTP connect path
             # (see _connect_http) — a live call can hit it too if the
@@ -754,29 +777,207 @@ class McpManager:
                     logger.error(f"MCP reconnect failed for {server_id}")
                     return {"error": f"MCP server crashed and reconnect failed: {server_id}", "exit_code": 1}
             else:
-                logger.error(f"MCP tool call failed: {qualified_name}: {e}")
-                return {"error": str(e), "exit_code": 1}
+                # Non-builtin (stdio/SSE/HTTP-configured) servers previously had
+                # no self-healing here: a dead transport ("Connection closed")
+                # failed every subsequent call for the rest of the conversation
+                # until someone manually clicked reconnect. Try once to bring
+                # the connection back up before giving up.
+                logger.warning(f"MCP call failed for {qualified_name}, attempting reconnect: {e}", exc_info=True)
+                reconnected = await self._reconnect_any(server_id)
+                if reconnected:
+                    session = self._sessions.get(server_id)
+                    if session:
+                        try:
+                            result = await asyncio.wait_for(
+                                self._do_call(session, tool_name, arguments), timeout=self.CALL_TOOL_TIMEOUT_S
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                f"MCP tool call timed out after reconnect "
+                                f"({self.CALL_TOOL_TIMEOUT_S}s): {qualified_name}"
+                            )
+                            return {
+                                "error": f"MCP tool '{qualified_name}' timed out after {self.CALL_TOOL_TIMEOUT_S}s",
+                                "exit_code": 1,
+                            }
+                        except Exception as e2:
+                            logger.error(f"MCP tool call failed after reconnect: {qualified_name}: {e2}", exc_info=True)
+                            return {"error": str(e2), "exit_code": 1}
+                    else:
+                        return {"error": f"Reconnected but no session for {server_id}", "exit_code": 1}
+                else:
+                    logger.error(f"MCP tool call failed and reconnect failed: {qualified_name}: {e}")
+                    return {"error": str(e), "exit_code": 1}
 
         return result
+
+    def _validate_tool_args(self, server_id: str, tool_name: str, arguments: Dict) -> Optional[str]:
+        """Check arguments against the tool's advertised JSON Schema.
+
+        Returns an actionable error string, or None when the call looks valid.
+
+        MCP tools ship a full input schema, but nothing checked the model's
+        arguments against it -- a call with a missing required field or a
+        hallucinated parameter name was dispatched anyway and came back as
+        whatever server-side error that produced, often a generic traceback
+        naming no argument at all. Small models bleed parameter conventions
+        between similarly-named tools (a generic `query` where a server wants
+        `search_term`), which is exactly the case a schema-derived message can
+        correct in one round.
+
+        Deliberately conservative -- it only rejects what the schema is
+        unambiguous about, because a false rejection blocks a call the server
+        would have accepted:
+          - no declared properties -> no opinion, skip entirely
+          - explicit additionalProperties: true -> unknown args are allowed
+        """
+        if not isinstance(arguments, dict):
+            return None
+
+        tool = next(
+            (t for t in self._tools.get(server_id, []) if t.get("name") == tool_name),
+            None,
+        )
+        if not tool:
+            return None
+
+        schema = tool.get("input_schema") or {}
+        if not isinstance(schema, dict):
+            return None
+        props = schema.get("properties")
+        if not isinstance(props, dict) or not props:
+            # The server did not describe its inputs; it alone can judge them.
+            return None
+
+        required = schema.get("required")
+        required = required if isinstance(required, list) else []
+        missing = [r for r in required if r not in arguments]
+
+        unknown = []
+        if schema.get("additionalProperties") is not True:
+            unknown = [k for k in arguments if k not in props]
+
+        if not missing and not unknown:
+            return None
+
+        # Report BOTH problems at once. A wrong parameter name usually shows up
+        # as one unknown arg AND one missing required arg (`query` sent where
+        # the server wants `search_term`); reporting only the first means the
+        # model resends with both names and fails again on the second round.
+        problems = []
+        if missing:
+            problems.append(f"missing required argument(s): {', '.join(sorted(missing))}")
+        if unknown:
+            problems.append(f"unknown argument(s): {', '.join(sorted(unknown))}")
+        return (
+            f"Invalid arguments for '{tool_name}' -- {'; '.join(problems)}. "
+            f"This tool accepts: {', '.join(sorted(props))}."
+        )
+
+    async def _reconnect_any(self, server_id: str) -> bool:
+        """Tear down and reconnect ANY configured MCP server (stdio/SSE/HTTP),
+        using its stored config from the database.
+
+        Mirrors the manual /servers/{id}/reconnect endpoint. call_tool's
+        auto-reconnect-on-failure only covered builtin (stdio, in-process)
+        servers via _reconnect_builtin -- a real incident showed a remote HTTP
+        server whose transport died mid-conversation ("Connection closed") and
+        then failed EVERY subsequent tool call for the rest of the session,
+        because nothing ever tried to bring it back. This is the non-builtin
+        counterpart, so any transport gets the same self-healing on a dead
+        connection instead of needing a manual reconnect click.
+        """
+        db = SessionLocal()
+        try:
+            srv = db.query(McpServer).filter(McpServer.id == server_id).first()
+            if not srv:
+                return False
+            args = json.loads(srv.args) if srv.args else []
+            env = json.loads(srv.env) if srv.env else {}
+            # The headers column is JSON, so it is usually already a dict; the
+            # string branch is for a row written before the column was typed.
+            _raw_headers = srv.headers
+            headers = (
+                _raw_headers if isinstance(_raw_headers, dict)
+                else (json.loads(_raw_headers) if _raw_headers else None)
+            )
+            name, transport, command, url = srv.name, srv.transport, srv.command, srv.url
+        finally:
+            db.close()
+
+        await self.disconnect_server(server_id)
+        try:
+            ok = await self.connect_server(
+                server_id=server_id,
+                name=name,
+                transport=transport,
+                command=command,
+                args=args,
+                env=env,
+                url=url,
+                headers=headers,
+            )
+            if ok:
+                logger.info(f"Reconnected MCP server after dead-connection failure: {name}")
+            return ok
+        except Exception as e:
+            logger.error(f"Failed to reconnect MCP server {name}: {e}", exc_info=True)
+            return False
 
     async def _do_call(self, session, tool_name: str, arguments: Dict) -> Dict:
         """Execute a single MCP tool call and return result dict."""
         result = await session.call_tool(tool_name, arguments)
         output_parts = []
         images = []
+        def _mime_of(obj, default):
+            # Same rename risk as Tool.inputSchema -> input_schema: check both
+            # names defensively rather than assume the old one.
+            return getattr(obj, 'mime_type', None) or getattr(obj, 'mimeType', None) or default
+
         for content in result.content:
+            ctype = getattr(content, 'type', '')
             if hasattr(content, 'text'):
                 output_parts.append(content.text)
-            elif getattr(content, 'type', '') == 'image' and hasattr(content, 'data'):
+            elif ctype == 'image' and hasattr(content, 'data'):
                 # Image content (e.g. Playwright screenshots)
-                mime = getattr(content, 'mimeType', 'image/png')
+                mime = _mime_of(content, 'image/png')
                 images.append({"data": content.data, "mimeType": mime})
                 output_parts.append(f"[Screenshot captured ({mime})]")
+            elif ctype == 'resource':
+                # EmbeddedResource carries its payload on .resource, so it has
+                # neither .text nor .data and fell through every branch here --
+                # contributing NOTHING to the output. A server returning an
+                # embedded resource looked to the model like a tool that
+                # succeeded and returned empty. Surface it instead.
+                res = getattr(content, 'resource', None)
+                res_text = getattr(res, 'text', None)
+                uri = getattr(res, 'uri', None) or 'resource'
+                if res_text:
+                    output_parts.append(str(res_text))
+                elif getattr(res, 'blob', None):
+                    # Binary: describe it rather than dumping base64 into context.
+                    output_parts.append(
+                        f"[Resource: {uri} (binary, {_mime_of(res, 'application/octet-stream')})]"
+                    )
+                else:
+                    output_parts.append(f"[Resource: {uri}]")
+            elif ctype == 'resource_link':
+                # A pointer to a resource the server can read separately; the
+                # URI is the whole payload and is otherwise dropped.
+                output_parts.append(f"[Resource link: {getattr(content, 'uri', 'unknown')}]")
+            elif ctype == 'audio':
+                # AudioContent has .data, so the generic fallback below used to
+                # str() a base64 audio blob straight into the model's context.
+                output_parts.append(f"[Audio content ({_mime_of(content, 'audio/wav')})]")
             elif hasattr(content, 'data'):
                 output_parts.append(str(content.data))
 
         output = "\n".join(output_parts)
-        is_error = getattr(result, 'isError', False)
+        # mcp>=2 may rename isError -> is_error; a silent False here would
+        # report every failed call as a success with the error text on stdout.
+        is_error = getattr(result, 'isError', None)
+        if is_error is None:
+            is_error = getattr(result, 'is_error', False)
 
         result_dict = {
             "stdout": output if not is_error else "",

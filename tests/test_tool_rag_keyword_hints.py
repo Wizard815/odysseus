@@ -24,7 +24,7 @@ def _index_without_embeddings():
     """A ToolIndex whose retrieval returns nothing, so get_tools_for_query
     exercises only the deterministic base + keyword-hint logic."""
     ti = ToolIndex.__new__(ToolIndex)        # skip __init__ (no ChromaDB/fastembed)
-    ti.retrieve = lambda query, k=8: []
+    ti.retrieve = lambda query, k=8, exclude_servers=None: []
     return ti
 
 
