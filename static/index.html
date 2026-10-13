@@ -1494,7 +1494,13 @@
               aria-label="Settings search results"
             ></div>
           </div>
-          <!-- Section 1: AI plumbing (Add Models → AI Defaults → Search) -->
+          <!-- Section 1: AI plumbing (Argos → Add Models → AI Defaults → Search) -->
+          <!-- Argos is the model engine every other tab points at, so it leads
+               this section rather than living in the generic Integrations list. -->
+          <button class="settings-nav-item" data-settings-tab="argos">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M12 22V12"/><path d="M3 7l9 5 9-5"/></svg>
+            <span>Argos</span>
+          </button>
           <button class="settings-nav-item active" data-settings-tab="services">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
             <span>Add Models</span>
@@ -2258,6 +2264,48 @@
         </div>
 
         <!-- ═══ SERVICES TAB ═══ -->
+        <!-- Argos connection suite. Talks to routes/argos_routes.py, which
+             proxies the engine (a separate origin, no CORS) and registers its
+             MCP endpoint in one click. -->
+        <div data-settings-panel="argos" class="hidden">
+          <div class="admin-card">
+            <h2>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M12 22V12"/><path d="M3 7l9 5 9-5"/></svg>
+              Argos <span class="admin-badge" id="argos-badge" style="margin-left:6px;">not configured</span>
+            </h2>
+            <div class="admin-toggle-sub" style="margin-bottom:8px;">The model engine. It loads models on demand and routes profiles; chat, embeddings and the Cookbook all point here.</div>
+
+            <div class="settings-row">
+              <label class="settings-label">Base URL</label>
+              <input id="argos-url" class="settings-input" placeholder="http://192.168.20.5:8080" autocomplete="off" spellcheck="false">
+            </div>
+
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+              <button type="button" class="admin-btn-sm" id="argos-save">Save</button>
+              <button type="button" class="admin-btn-sm" id="argos-refresh">Refresh</button>
+              <button type="button" class="admin-btn-sm" id="argos-connect">Connect tools</button>
+              <button type="button" class="admin-btn-sm" id="argos-disconnect" style="display:none;">Disconnect tools</button>
+              <span id="argos-msg" style="font-size:11px;min-height:14px;"></span>
+            </div>
+          </div>
+
+          <div class="admin-card" id="argos-overview-card" style="display:none;">
+            <h2>Overview</h2>
+            <div id="argos-overview" style="font-size:12px;line-height:1.7;"></div>
+          </div>
+
+          <div class="admin-card" id="argos-profiles-card" style="display:none;">
+            <h2>Profiles</h2>
+            <div class="admin-toggle-sub" style="margin-bottom:8px;">A profile pins models to preconfigured variants. Switching applies to launches that start afterwards; a model already loaded keeps its command until it unloads.</div>
+            <div id="argos-profiles"></div>
+          </div>
+
+          <div class="admin-card" id="argos-models-card" style="display:none;">
+            <h2>Models</h2>
+            <div id="argos-models" style="font-size:12px;line-height:1.7;"></div>
+          </div>
+        </div>
+
         <div data-settings-panel="services">
 
           <!-- ── Local card ─────────────────────────────────────────── -->
@@ -2456,6 +2504,41 @@
 
         <!-- ═══ SYSTEM TAB ═══ -->
         <div data-settings-panel="system" class="hidden">
+
+          <!-- API Tokens. The create/list/revoke logic already lived in
+               static/js/admin.js (loadTokens/initTokenForm) but had no markup
+               to bind to, so the panel never rendered and there was no way to
+               mint a token from the UI. This is that markup. -->
+          <div class="admin-card" id="settings-system-tokens-card">
+            <h2>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              API Tokens
+            </h2>
+            <div class="admin-toggle-sub" style="margin-bottom:8px;">Bearer tokens for external clients such as Argos. A token is shown <strong>once</strong> when it is created — copy it then. Only a hash is stored, so it cannot be shown again.</div>
+
+            <div class="settings-col" style="gap:6px;">
+              <input type="text" id="adm-tokenName" class="settings-input" placeholder="Token name (e.g. argos)" autocomplete="off" spellcheck="false">
+              <div id="adm-tokenScopePicker" class="adm-token-scope-picker"></div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                <button type="button" class="admin-btn-sm" id="adm-tokenPresetArgos">Scopes Argos needs</button>
+                <button type="button" class="admin-btn-sm" id="adm-tokenPresetAll">Select all</button>
+                <button type="button" class="admin-btn-sm" id="adm-tokenPresetNone">Clear</button>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+                <button type="button" class="admin-btn-sm" id="adm-tokenAddBtn">Create token</button>
+                <span id="adm-tokenMsg" style="font-size:11px;"></span>
+              </div>
+              <div id="adm-tokenReveal" style="display:none;margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px;">
+                <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">Copy this now — it cannot be shown again.</div>
+                <div style="display:flex;gap:6px;align-items:center;">
+                  <code id="adm-tokenValue" style="flex:1;min-width:0;font-size:12px;word-break:break-all;user-select:all;"></code>
+                  <button type="button" class="admin-btn-sm" id="adm-tokenCopyBtn" title="Copy token" aria-label="Copy token" style="opacity:0.7;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                </div>
+              </div>
+            </div>
+
+            <div id="adm-tokenList" style="margin-top:10px;"></div>
+          </div>
 
           <div class="admin-card" id="settings-system-logs-card">
             <h2>
@@ -2658,6 +2741,7 @@
 <script type="module" src="/static/js/models.js"></script>  <!-- This must come BEFORE app.js -->
 <script type="module" src="/static/js/rag.js"></script>
 <script type="module" src="/static/js/mcpConnectors.js"></script>
+<script type="module" src="/static/js/argos.js"></script>
 <script type="module" src="/static/js/presets.js?v=20260908personaname1"></script>
 <script type="module" src="/static/js/search.js"></script>
 <script type="module" src="/static/js/spinner.js"></script>
