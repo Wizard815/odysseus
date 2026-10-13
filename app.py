@@ -750,6 +750,10 @@ app.include_router(setup_embedding_routes())
 from routes.model_routes import setup_model_routes
 app.include_router(setup_model_routes(model_discovery))
 
+# Argos connection suite (model engine: status, profiles, one-click MCP)
+from routes.argos_routes import setup_argos_routes
+app.include_router(setup_argos_routes())
+
 # GitHub Copilot device-flow login
 from routes.copilot_routes import setup_copilot_routes
 app.include_router(setup_copilot_routes())
