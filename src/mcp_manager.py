@@ -177,6 +177,28 @@ def mcp_tool_is_readonly(tool: Dict) -> bool:
     return name.startswith(_MCP_READONLY_VERBS)
 
 
+async def _open_mcp_session(session) -> str:
+    """Complete the MCP handshake, whichever revision the server speaks.
+
+    Revision 2026-07-28 removed the initialize/initialized handshake in favour
+    of a single `server/discover` call, and a 2026-07-28-only server (Argos is
+    one) answers `initialize` with UNSUPPORTED_PROTOCOL_VERSION (-32022)
+    instead of negotiating down. A server from before the revision has no
+    `discover` at all. So try the modern path first and fall back to the
+    handshake, which is what lets one client talk to both.
+
+    Returns which path was used, for the log.
+    """
+    try:
+        await session.discover()
+        return "discover"
+    except Exception as e:  # noqa: BLE001 - any failure means "try the old way"
+        logger.debug("server/discover unavailable (%s); falling back to initialize", e)
+    # The fallback, deliberately a direct call: this helper must not recurse.
+    await session.initialize()
+    return "initialize"
+
+
 class McpManager:
 
     # No prior bound existed on an individual tools/call round trip -- a hung or
@@ -295,7 +317,7 @@ class McpManager:
                 read_stream, write_stream = transport
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
 
-                await session.initialize()
+                await _open_mcp_session(session)
                 tools_result = await session.list_tools()
 
                 tools = []
@@ -376,7 +398,7 @@ class McpManager:
                 read_stream, write_stream = transport
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
 
-                await session.initialize()
+                await _open_mcp_session(session)
                 tools_result = await session.list_tools()
 
                 tools = []
@@ -488,7 +510,7 @@ class McpManager:
             # getter that used to be a third element is gone.
             read_stream, write_stream = transport
             session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await session.initialize()
+            await _open_mcp_session(session)
 
             tools_result = await session.list_tools()
             tools = []
