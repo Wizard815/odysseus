@@ -3334,6 +3334,21 @@ const _TOKEN_SCOPES = [
   { key: 'memory:write',      label: 'Memory write',      detail: 'Write memory when enabled' },
   { key: 'cookbook:read',     label: 'Cookbook read',     detail: 'List cookbook tasks + tail their tmux output' },
   { key: 'cookbook:launch',   label: 'Cookbook launch',   detail: 'Launch and stop cookbook serve tasks' },
+  { key: 'gallery:read',      label: 'Gallery read',      detail: 'List and read gallery images' },
+  { key: 'tasks:read',        label: 'Tasks read',        detail: 'List scheduled tasks' },
+  { key: 'tasks:run',         label: 'Tasks run',         detail: 'Run a scheduled task on demand' },
+  { key: 'skills:read',       label: 'Skills read',       detail: 'List installed skills' },
+];
+
+// The scopes Argos's Odysseus hub uses. Kept as its own list so the preset
+// button stays right when the scope set grows.
+const _ARGOS_SCOPES = [
+  'todos:read', 'todos:write',
+  'documents:read', 'documents:write',
+  'calendar:read', 'calendar:write',
+  'memory:read', 'memory:write',
+  'cookbook:read',
+  'gallery:read', 'tasks:read', 'tasks:run', 'skills:read',
 ];
 
 function _renderTokenScopeRows(t) {
@@ -3447,6 +3462,29 @@ function initTokenForm() {
   const addBtn = el('adm-tokenAddBtn');
   if (!addBtn || addBtn.dataset.bound) return;
   addBtn.dataset.bound = '1';
+
+  // One checkbox per scope, so creating a token does not mean recalling scope
+  // strings by heart. The preset buttons cover the common cases.
+  const picker = el('adm-tokenScopePicker');
+  if (picker && !picker.dataset.bound) {
+    picker.dataset.bound = '1';
+    picker.innerHTML = _TOKEN_SCOPES.map(sc => `
+      <label style="display:flex;align-items:center;gap:8px;min-height:26px;">
+        <input type="checkbox" class="adm-new-tok-scope" data-scope="${esc(sc.key)}">
+        <span style="font-size:12px;width:112px;flex-shrink:0;">${esc(sc.label)}</span>
+        <span style="font-size:11px;opacity:0.6;flex:1;min-width:0;">${esc(sc.detail)}</span>
+      </label>`).join('');
+    const setScopes = (keys) => picker.querySelectorAll('.adm-new-tok-scope').forEach(cb => {
+      cb.checked = keys.includes(cb.dataset.scope);
+    });
+    const preset = (id, keys) => {
+      const btn = el(id);
+      if (btn) btn.addEventListener('click', () => setScopes(keys));
+    };
+    preset('adm-tokenPresetArgos', _ARGOS_SCOPES);
+    preset('adm-tokenPresetAll', _TOKEN_SCOPES.map(sc => sc.key));
+    preset('adm-tokenPresetNone', []);
+  }
   addBtn.addEventListener('click', async () => {
     const msg = el('adm-tokenMsg');
     const reveal = el('adm-tokenReveal');
@@ -3454,7 +3492,9 @@ function initTokenForm() {
     const name = el('adm-tokenName').value.trim();
     if (!name) { msg.textContent = 'Token name is required'; msg.className = 'admin-error'; return; }
     const fd = new FormData(); fd.append('name', name);
-    const scopes = (el('adm-tokenScopes')?.value || '').trim();
+    const scopes = Array.from(
+      document.querySelectorAll('#adm-tokenScopePicker .adm-new-tok-scope:checked')
+    ).map(cb => cb.dataset.scope).join(',');
     if (scopes) fd.append('scopes', scopes);
     try {
       const res = await fetch('/api/tokens', { method: 'POST', body: fd, credentials: 'same-origin' });
@@ -3463,7 +3503,8 @@ function initTokenForm() {
         el('adm-tokenValue').textContent = data.token;
         reveal.style.display = '';
         el('adm-tokenName').value = '';
-        if (el('adm-tokenScopes')) el('adm-tokenScopes').value = '';
+        document.querySelectorAll('#adm-tokenScopePicker .adm-new-tok-scope:checked')
+          .forEach(cb => { cb.checked = false; });
         loadTokens();
       }
       else { msg.textContent = data.detail || 'Failed'; msg.className = 'admin-error'; }

@@ -9,7 +9,7 @@
 // affects every chat -- this only ever touches the one conversation
 // that's open when you toggle it.
 
-import uiModule from './ui.js';
+import uiModule from './ui.js?v=20260916largetoolscroll1';
 import { getCurrentSessionId, hasPendingChat } from './sessions.js';
 import { makeWindowDraggable } from './windowDrag.js';
 
