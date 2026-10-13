@@ -155,6 +155,29 @@ def setup_mcp_routes(mcp_manager: McpManager):
         finally:
             db.close()
 
+    @router.get("/servers/lite")
+    def list_servers_lite(request: Request):
+        """List MCP servers for the per-chat Connectors picker. Deliberately
+        NOT admin-gated (any authenticated user needs this to toggle
+        connectors on their own chat) and deliberately thin -- omits
+        command/args/env/oauth_config, which are admin-sensitive and not
+        needed to just show a name + on/off switch."""
+        db = SessionLocal()
+        try:
+            servers = db.query(McpServer).filter(McpServer.is_enabled == True).all()
+            result = []
+            for srv in servers:
+                status = mcp_manager.get_server_status(srv.id)
+                result.append({
+                    "id": srv.id,
+                    "name": srv.name,
+                    "status": status.get("status", "disconnected"),
+                    "tool_count": status.get("tool_count", 0),
+                })
+            return result
+        finally:
+            db.close()
+
     @router.post("/servers")
     async def add_server(
         request: Request,
