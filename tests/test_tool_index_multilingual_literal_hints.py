@@ -4,7 +4,7 @@ from src.agent_loop import _compact_native_route_tools
 
 def empty_index() -> ToolIndex:
     index = ToolIndex.__new__(ToolIndex)
-    index.retrieve = lambda _query, k=8: []
+    index.retrieve = lambda _query, k=8, exclude_servers=None: []
     return index
 
 

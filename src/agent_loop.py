@@ -13913,7 +13913,10 @@ def _tui_coding_failure_summary(tool_events: list[dict[str, Any]]) -> str:
 
 
 _DESTRUCTIVE_REQUEST_RE = re.compile(
-    r"\b(delete|remove|archive|trash|send|reply|unsubscribe|mark\s+.*read"
+    # `mark\s+(?:as\s+)?read` rather than `mark\s+.*read`: the greedy `.*`
+    # backtracks catastrophically on input like "mark mark mark ..." (guarded by
+    # test_redos_core_parsers, which is why upstream dropped it).
+    r"\b(delete|remove|archive|trash|send|reply|unsubscribe|mark\s+(?:as\s+)?read"
     r"|wipe|purge|migrat\w*|permanently)\b",
     re.IGNORECASE,
 )
