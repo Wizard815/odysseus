@@ -24850,6 +24850,16 @@ async def stream_agent_loop(
     # all 20 rounds, looks like the chat "died". Track recent call
     # signatures + consecutive no-text tool rounds to bail early.
     _recent_call_sigs = collections.deque(maxlen=6)
+    # Recent round TEXT (normalized), tracked alongside call sigs. A repeated
+    # tool call used to reset _stuck_rounds to 0 whenever the model wrote ANY
+    # non-empty text that round, on the assumption that non-empty text means
+    # progress. Real incident: a model stuck on "wrong MCP server" repeated the
+    # same call across several rounds while also writing near-identical filler
+    # each time ("Let me test the BoardNotes MCP connection:" / "...properly:")
+    # -- the detector never tripped because it only checked the tool-call axis,
+    # not whether the text was also going in circles. 16+ rounds burned with no
+    # progress before a human stopped it.
+    _recent_text_sigs = collections.deque(maxlen=6)
     _stuck_rounds = 0
     _blocked_status_rounds = 0
     _read_only_inspection_rounds = 0
@@ -31571,9 +31581,19 @@ async def stream_agent_loop(
             _read_only_inspection_rounds += 1
         else:
             _read_only_inspection_rounds = 0
-        # Circling = repeating a recent call with nothing written. Any
-        # progress (a NEW distinct call, or actual answer text) resets it.
-        if _is_repeat and not _real_text:
+        # Normalized snippet for text-repeat detection -- same idea as _sig,
+        # but for what the model WROTE rather than what it called. Only a
+        # meaningful prefix is compared, so minor trailing variation (a
+        # different entity ID quoted, etc.) does not defeat the match.
+        _text_sig = re.sub(r"\s+", " ", _real_text.lower()).strip()[:100]
+        _text_is_repeat = bool(_text_sig) and _text_sig in _recent_text_sigs
+        if _text_sig:
+            _recent_text_sigs.append(_text_sig)
+        # Circling = repeating a recent call with nothing NEW written. Text only
+        # counts as progress if it is not itself a near-repeat of recent text --
+        # a repeated tool call paired with repeated filler narration is still
+        # circling, not progress, even though the text field is not empty.
+        if _is_repeat and (not _real_text or _text_is_repeat):
             _stuck_rounds += 1
         else:
             _stuck_rounds = 0
