@@ -8680,6 +8680,24 @@ def _message_content_text(message: Dict) -> str:
     return str(content or "")
 
 
+def _extract_last_assistant_message(messages: List[Dict]) -> str:
+    """Return the most recent assistant message as plain text.
+
+    Used alongside `_extract_last_user_message` for the fake-success guard:
+    when a destructive action needs confirmation, the destructive verb
+    ("delete entity 9681969") typically appears in the ASSISTANT's own
+    confirmation-ask turn, not in the user's one-word "yes" reply that triggers
+    this turn. Checking only the last user message misses that.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+            return content
+    return ""
+
+
 def _user_turn_count(messages: List[Dict]) -> int:
     """Count real user turns in the message list."""
     count = 0
@@ -8815,7 +8833,15 @@ _LOCAL_COMPUTER_REFERENCE_RE = re.compile(
     r"\b(?:on|from|in|using|with)\s+(?:this|my|the)\s+(?:computer|machine|pc|laptop|device|system)\b"
     r"|\b(?:this|my|the)\s+(?:computer|machine|pc|laptop|device|system)\b"
     r"|\b(?:local|host)\s+(?:computer|machine|files?|system)\b"
-    r"|\b(?:on|from)\s+(?!this\b|my\b|the\b|a\b|an\b)(?:[a-z][a-z0-9_.-]{1,31})\b",
+    # Named remote machine, e.g. "run this on mx-llamacpp-ssh" / "check files
+    # on raidlab.local" / "from gpu-node-1". The lookahead requires the token
+    # to actually contain a hyphen/dot/digit (real host names here do) rather
+    # than matching ANY bare lowercase word after on/from -- the old version
+    # matched ordinary English like "the entity_id from step 2", misrouting an
+    # unrelated MCP request to the local-machine toolset and wiping out its real
+    # tool selection (confirmed root cause of a real incident: zero MCP tools
+    # sent for a Kanka prompt because it said "... from step 2").
+    r"|\b(?:on|from)\s+(?!this\b|my\b|the\b|a\b|an\b)(?=[a-z0-9_.-]*[-.\d])(?:[a-z][a-z0-9_.-]{1,31})\b",
     re.IGNORECASE,
 )
 _LOCAL_NETWORK_REFERENCE_RE = re.compile(
@@ -13887,7 +13913,8 @@ def _tui_coding_failure_summary(tool_events: list[dict[str, Any]]) -> str:
 
 
 _DESTRUCTIVE_REQUEST_RE = re.compile(
-    r"\b(delete|remove|archive|trash|send|reply|unsubscribe)\b",
+    r"\b(delete|remove|archive|trash|send|reply|unsubscribe|mark\s+.*read"
+    r"|wipe|purge|migrat\w*|permanently)\b",
     re.IGNORECASE,
 )
 _MARK_REQUEST_RE = re.compile(r"\bmark", re.IGNORECASE)
@@ -25262,7 +25289,17 @@ async def stream_agent_loop(
                 )
             return _filter_route_tool_schemas(schemas)
 
-        wants_mcp = any(keyword in _last_user.lower() for keyword in _MCP_KEYWORDS)
+        # The keyword check alone only looks at the bare last message, which
+        # misses an ongoing MCP-tool conversation where a short follow-up
+        # ("search it to confirm it's deleted") contains none of these words --
+        # a real incident had retrieval correctly select MCP tools while this
+        # gate still zeroed the schema list, leaving the model no tool at all.
+        # Trust the retrieval result too: it is more context-aware than a fixed
+        # keyword list.
+        wants_mcp = (
+            any(keyword in _last_user.lower() for keyword in _MCP_KEYWORDS)
+            or any(str(n).startswith("mcp__") for n in (route_relevant_tools or ()))
+        )
         schemas = route_mcp_schemas if wants_mcp and route_mcp_schemas else []
         if _pure_web_turn:
             allowed = _web_only_route_tools(_last_user, disabled_tools)
@@ -37493,11 +37530,27 @@ async def stream_agent_loop(
                 yield f'data: {json.dumps({"type": "final_response", "content": full_response})}\n\n'
         else:
             full_response = _normalized_full_response
+        # Fake-success guard: catches a model claiming a destructive action
+        # ("Done. Entity deleted.") when this turn made zero real tool calls.
+        # Not gated to the in-house finetune: the same failure was observed on a
+        # plain local GGUF answering "Done, deleted" twice with no tool calls at
+        # all, so it applies to any model.
         if (
             not tool_events
-            and _looks_like_destructive_request(_last_user)
+            and (
+                _looks_like_destructive_request(_last_user)
+                # A one-word "yes" confirming a prior destructive ask will not
+                # match on the user's turn alone -- check what the assistant
+                # just asked too.
+                or _looks_like_destructive_request(_extract_last_assistant_message(messages))
+            )
             and _looks_like_success_claim(full_response)
         ):
+            logger.warning(
+                "[agent] fake-success guard: model claimed a destructive action "
+                "completed with zero tool calls this turn (model=%s). Response: %r",
+                model, full_response[:200],
+            )
             full_response = "I couldn't make that change because no matching tool action completed."
     _web_retry_preamble = _looks_like_web_retry_preamble(full_response)
     if (
