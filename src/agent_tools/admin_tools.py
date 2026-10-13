@@ -361,6 +361,35 @@ async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
         tools = mcp.get_all_tools()
         if sid:
             tools = [t for t in tools if t.get("server_id") == sid]
+        # An unscoped listing across many connected servers can be large enough
+        # to hit format_tool_result's 8000-char truncation cap. The model then
+        # sees a generic "(truncated, N chars total)" marker with no way to
+        # recover and -- observed in practice -- just re-calls the identical
+        # unscoped list_tools, burning rounds until the loop-breaker kills it.
+        # Once a server_id already narrows things, return the real listing as
+        # before; otherwise, when there is enough to plausibly overflow, return
+        # a compact per-server summary with an explicit next step.
+        if not sid and len(tools) > 15:
+            by_server: dict[str, int] = {}
+            server_id_of: dict[str, str] = {}
+            for t in tools:
+                by_server[t["server_name"]] = by_server.get(t["server_name"], 0) + 1
+                server_id_of.setdefault(t["server_name"], t.get("server_id", ""))
+            servers = [
+                {"server": name, "server_id": server_id_of.get(name, ""), "tool_count": count}
+                for name, count in by_server.items()
+            ]
+            return {
+                "response": (
+                    f"{len(tools)} MCP tools across {len(servers)} server(s). "
+                    "Too many to list individually here -- call list_tools again "
+                    "with a `server_id` from the list below to see that server's "
+                    "actual tool names. Do not repeat the same unscoped call "
+                    "expecting different output."
+                ),
+                "servers": servers,
+                "exit_code": 0,
+            }
         items = [{"name": t["name"], "server": t["server_name"],
                   "description": t.get("description", "")} for t in tools]
         return {"response": f"{len(items)} MCP tools available", "tools": items, "exit_code": 0}
