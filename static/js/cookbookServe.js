@@ -2245,7 +2245,7 @@ function _rerenderCachedModels() {
             params.set('host', target.host);
             if (target.port) params.set('ssh_port', target.port);
           }
-          const res = await fetch('/api/cookbook/llama-cache-types' + (params.toString() ? '?' + params : ''), { credentials: 'same-origin' });
+          const res = await _fetchCookbookWithTimeout('/api/cookbook/llama-cache-types' + (params.toString() ? '?' + params : ''), { credentials: 'same-origin' }, 15000);
           const data = await res.json();
           if (!data.ok || !Array.isArray(data.cache_types) || !data.cache_types.length) return;
           const current = sel.value;

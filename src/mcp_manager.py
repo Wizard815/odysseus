@@ -619,7 +619,8 @@ class McpManager:
     async def _connect_with_timeout(self, srv):
         args = json.loads(srv.args) if srv.args else []
         env = json.loads(srv.env) if srv.env else {}
-        headers = srv.headers if isinstance(srv.headers, dict) else (json.loads(srv.headers) if srv.headers else None)
+        _raw_headers = getattr(srv, "headers", None)
+        headers = _raw_headers if isinstance(_raw_headers, dict) else (json.loads(_raw_headers) if _raw_headers else None)
 
         try:
             await asyncio.wait_for(
