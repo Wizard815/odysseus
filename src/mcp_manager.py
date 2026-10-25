@@ -877,7 +877,11 @@ class McpManager:
 
         unknown = []
         if schema.get("additionalProperties") is not True:
-            unknown = [k for k in arguments if k not in props]
+            # `_odysseus_*` keys (owner, session id) are injected by
+            # tool_execution after it strips any the model supplied -- they are
+            # trusted host context the built-in servers pop off, never part of
+            # an advertised schema, so they must not count as unknown.
+            unknown = [k for k in arguments if k not in props and not k.startswith("_odysseus_")]
 
         if not missing and not unknown:
             return None

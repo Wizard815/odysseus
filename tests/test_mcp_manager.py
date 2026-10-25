@@ -99,6 +99,22 @@ def test_additional_properties_true_allows_extras():
     assert mgr._validate_tool_args("srv", "find_entities", {"search_term": "x", "extra": 1}) is None
 
 
+def test_injected_host_context_args_are_not_unknown():
+    """tool_execution injects `_odysseus_owner` / `_odysseus_session_id` into
+    built-in email and generate_image calls; rejecting them blocked every such
+    call before it reached the server."""
+    mgr = _mgr_with_schema(_SEARCH_SCHEMA)
+
+    assert mgr._validate_tool_args(
+        "srv", "find_entities",
+        {"search_term": "x", "_odysseus_owner": "alice", "_odysseus_session_id": "s1"},
+    ) is None
+    # still a real check for everything else
+    err = mgr._validate_tool_args("srv", "find_entities", {"_odysseus_owner": "alice", "query": "x"})
+    assert "unknown argument(s): query" in err
+    assert "_odysseus_owner" not in err
+
+
 def test_unknown_tool_is_left_to_the_server():
     mgr = _mgr_with_schema(_SEARCH_SCHEMA)
 
