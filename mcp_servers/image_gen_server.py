@@ -138,6 +138,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 # Save to gallery
                 try:
                     from src.database import SessionLocal, GalleryImage
+                    owner = str(arguments.get("_odysseus_owner") or "").strip() or None
                     db = SessionLocal()
                     db.add(GalleryImage(
                         id=str(uuid.uuid4()),
@@ -146,9 +147,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         model=model_id,
                         size=size,
                         quality=payload.get("quality", "medium"),
+                        owner=owner,
                     ))
                     db.commit()
                     db.close()
+                    if owner:
+                        try:
+                            from src.generated_images import register_generated_image
+                            register_generated_image(filename, owner)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
