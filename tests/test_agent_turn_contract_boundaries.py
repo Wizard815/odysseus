@@ -87,6 +87,8 @@ def schema_function(force_answer=False, keep_artifacts=False, guide_only=False):
         "_retrieval_query": "", "_last_user": "", "workspace": None,
         "client_runtime_context": None,
         "_apply_tool_surface_to_schemas": lambda schemas, surface: schemas,
+        # the live MCP re-pull each round (no MCP manager here)
+        "mcp_mgr": None, "_mcp_disabled_map": {},
     }
     return load_function("_tool_schemas_for_route", namespace)
 

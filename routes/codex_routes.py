@@ -39,6 +39,7 @@ GALLERY_READ_SCOPES = {"gallery:read"}
 TASK_READ_SCOPES = {"tasks:read", "tasks:run"}
 TASK_RUN_SCOPES = {"tasks:run"}
 SKILL_READ_SCOPES = {"skills:read"}
+CHAT_READ_SCOPES = {"chat"}
 WRITE_ACTIONS = {"add", "create", "new", "save", "remind", "update", "delete", "toggle_item", "remove", "remove_item"}
 
 
@@ -168,6 +169,7 @@ def setup_codex_routes(
     gallery_router: APIRouter | None = None,
     task_router: APIRouter | None = None,
     skills_router: APIRouter | None = None,
+    history_router: APIRouter | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/codex", tags=["codex"])
     email_list_endpoint = _find_endpoint(email_router, "GET", "/api/email/list")
@@ -185,6 +187,7 @@ def setup_codex_routes(
     task_list_endpoint = _find_endpoint(task_router, "GET", "/api/tasks")
     task_run_endpoint = _find_endpoint(task_router, "POST", "/api/tasks/{task_id}/run")
     skills_list_endpoint = _find_endpoint(skills_router, "GET", "/api/skills")
+    chat_history_endpoint = _find_endpoint(history_router, "GET", "/api/history/{session_id}")
 
     @router.get("/capabilities")
     def capabilities(request: Request):
@@ -246,11 +249,43 @@ def setup_codex_routes(
                     "actions": ["list"],
                     "available": skills_list_endpoint is not None,
                 },
+                "chat": {
+                    "read": scoped(CHAT_READ_SCOPES),
+                    "actions": ["read"],
+                    "available": chat_history_endpoint is not None,
+                },
             },
             "safety": {
                 "email_send_requires_confirmation": True,
                 "destructive_actions_should_confirm": True,
             },
+        }
+
+    @router.get("/chat/{session_id}")
+    async def read_chat(
+        request: Request,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 100,
+    ):
+        _scope_owner(request, CHAT_READ_SCOPES)
+        if chat_history_endpoint is None:
+            raise HTTPException(503, "chat history unavailable")
+        offset, limit = _clamp_pagination(
+            offset,
+            limit,
+            default_limit=100,
+            max_limit=100,
+        )
+        result = await chat_history_endpoint(request, session_id, limit, offset)
+        return {
+            "session_id": session_id,
+            "name": result["name"],
+            "model": result["model"],
+            "messages": result["history"],
+            "total": result["total"],
+            "offset": result["offset"],
+            "limit": result["limit"],
         }
 
     @router.get("/plugin.zip")
