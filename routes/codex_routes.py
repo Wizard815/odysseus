@@ -883,6 +883,40 @@ def setup_codex_routes(
             })
         return {"presets": out, "default_host": (state.get("env") or {}).get("defaultServer", "")}
 
+    @router.post("/cookbook/presets/delete")
+    async def codex_cookbook_delete_preset(request: Request, body: dict[str, Any] = Body(default_factory=dict)):
+        """Delete saved serve presets by their launch cmd (whitespace-insensitive).
+        Body: {cmd, name?}. When several presets share the cmd, `name` picks
+        which; a name that matches none of them deletes them all, so a preset
+        renamed on the caller's side is still found. Needs cookbook:launch:
+        it rewrites cookbook_state.json."""
+        _require_cookbook_scope(request, COOKBOOK_LAUNCH_SCOPES)
+        norm = dict(body or {})
+        key = " ".join(str(norm.get("cmd") or "").split())
+        name = str(norm.get("name") or "").strip().lower()
+        if not key:
+            raise HTTPException(400, "cmd required")
+        import json as _json
+        from core.atomic_io import atomic_write_json
+        from pathlib import Path as _Path
+        cookbook_state_path = _Path(COOKBOOK_STATE_FILE)
+        try:
+            state = _json.loads(cookbook_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"ok": True, "deleted": 0}
+        presets = state.get("presets") or []
+        same = [p for p in presets if isinstance(p, dict) and " ".join(str(p.get("cmd") or "").split()) == key]
+        named = [p for p in same if name and (p.get("name") or "").strip().lower() == name]
+        drop = {id(p) for p in (named or same)}
+        if not drop:
+            return {"ok": True, "deleted": 0}
+        state["presets"] = [p for p in presets if id(p) not in drop]
+        try:
+            atomic_write_json(cookbook_state_path, state)
+        except Exception as exc:
+            raise HTTPException(500, f"state write failed: {exc}")
+        return {"ok": True, "deleted": len(drop)}
+
     @router.post("/cookbook/preset/{name}")
     async def codex_cookbook_serve_preset(request: Request, name: str):
         """Launch a saved preset by name. Reuses the working cmd + host the
